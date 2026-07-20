@@ -1,5 +1,5 @@
 import 'package:flutter/material.dart';
-import 'package:nazariai/home.dart';
+import 'package:nazariai/features/dashboard/home.dart';
 
 void main() {
   runApp(const MyApp());

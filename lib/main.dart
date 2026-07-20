@@ -1,5 +1,4 @@
 import 'package:flutter/material.dart';
-import 'package:nazariai/features/dashboard/home.dart';
 
 void main() {
   runApp(const MyApp());
@@ -17,5 +16,19 @@ class MyApp extends StatelessWidget {
       debugShowCheckedModeBanner: false,
       home: const Home(),
     );
+  }
+}
+
+class Home extends StatefulWidget {
+  const Home({super.key});
+
+  @override
+  State<Home> createState() => _HomeState();
+}
+
+class _HomeState extends State<Home> {
+  @override
+  Widget build(BuildContext context) {
+    return const Scaffold(body: Center(child: Text('Initialization...')));
   }
 }

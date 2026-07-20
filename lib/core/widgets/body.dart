@@ -17,6 +17,8 @@ class _BodyState extends State<Body> {
 
   @override
   Widget build(BuildContext context) {
+    String textProTip =
+        'NazariAI processes everythinglocally. You can upload and summarize documents even when you are offline. Your data is never sent to the cloud, ensuring your privacy and security.';
     return Scaffold(
       // ----------------------Add the app bar------------------------
       appBar: AppBar(
@@ -103,8 +105,8 @@ class _BodyState extends State<Body> {
               cardDocWidget(
                 title: 'Document Title',
                 subtitle: 'Document Subtitle',
-                color: Colors.lightBlue,
-                icon: Icons.insert_drive_file,
+                color: Colors.red,
+                icon: Icons.picture_as_pdf,
               ),
               SizedBox(height: 10),
               cardDocWidget(
@@ -112,6 +114,35 @@ class _BodyState extends State<Body> {
                 subtitle: 'Document Subtitle',
                 color: Colors.lightBlue,
                 icon: Icons.insert_drive_file,
+              ),
+              SizedBox(height: 10),
+              cardWidget(
+                Colors.green[100],
+                Row(
+                  children: [
+                    Icon(Icons.lightbulb, size: 40, color: Colors.white),
+                    SizedBox(width: 12),
+                    Expanded(
+                      child: Column(
+                        mainAxisAlignment: MainAxisAlignment.start,
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        children: [
+                          Text(
+                            'Pro Tip',
+                            style: TextStyle(fontWeight: FontWeight.bold),
+                          ),
+                          SizedBox(height: 4),
+                          Text(
+                            textProTip,
+                            maxLines: 6,
+                            overflow: TextOverflow.ellipsis,
+                          ),
+                        ],
+                      ),
+                    ),
+                  ],
+                ),
+                height: 180,
               ),
             ],
           ),

@@ -1,4 +1,6 @@
 import 'package:flutter/material.dart';
+import 'package:nazariai/core/widgets/body.dart';
+import 'package:nazariai/core/widgets/navbar.dart';
 
 void main() {
   runApp(const MyApp());
@@ -14,7 +16,7 @@ class MyApp extends StatelessWidget {
       title: 'Flutter Demo',
       theme: ThemeData(colorScheme: .fromSeed(seedColor: Colors.deepPurple)),
       debugShowCheckedModeBanner: false,
-      home: const Home(),
+      home: const Body(),
     );
   }
 }

@@ -99,7 +99,7 @@ class _NazariChatScreenState extends State<NazariChatScreen> {
               child: _messages.isEmpty
                   ? const Center(
                       child: Text(
-                        'Posez une question sur vos documents',
+                        'Ask a question about your document',
                         style: TextStyle(color: NazariColors.grayLight),
                       ),
                     )

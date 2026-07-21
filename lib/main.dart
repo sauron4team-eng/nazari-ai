@@ -1,4 +1,5 @@
 import 'package:flutter/material.dart';
+import 'package:nazariai/screens/ai_assistant_screen.dart';
 
 void main() {
   runApp(const MyApp());
@@ -14,7 +15,7 @@ class MyApp extends StatelessWidget {
       title: 'Flutter Demo',
       theme: ThemeData(colorScheme: .fromSeed(seedColor: Colors.deepPurple)),
       debugShowCheckedModeBanner: false,
-      home: const Home(),
+      home: const NazariChatScreen(),
     );
   }
 }

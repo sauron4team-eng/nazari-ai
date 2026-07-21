@@ -1,6 +1,5 @@
 import 'package:flutter/material.dart';
-import 'package:nazariai/core/widgets/body.dart';
-import 'package:nazariai/core/widgets/navbar.dart';
+import 'package:nazariai/screens/documents_screen.dart';
 
 void main() {
   runApp(const MyApp());
@@ -14,9 +13,11 @@ class MyApp extends StatelessWidget {
   Widget build(BuildContext context) {
     return MaterialApp(
       title: 'Flutter Demo',
-      theme: ThemeData(colorScheme: .fromSeed(seedColor: Colors.deepPurple)),
+      theme: ThemeData(
+        colorScheme: ColorScheme.fromSeed(seedColor: Colors.deepPurple),
+      ),
       debugShowCheckedModeBanner: false,
-      home: const Body(),
+      home: const DocumentsScreen(),
     );
   }
 }

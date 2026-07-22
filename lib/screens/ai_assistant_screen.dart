@@ -1,41 +1,25 @@
+import 'dart:async';
 import 'package:flutter/material.dart';
+import 'package:google_fonts/google_fonts.dart';
+import 'package:provider/provider.dart';
+import 'package:file_picker/file_picker.dart';
 
-/// ---------------------------------------------------------------
-/// NazariAI — écran de chat de l'assistant d'étude
+import '../services/gemma_service.dart';
+import '../services/chat_history_service.dart';
+import '../services/document_service.dart';
+import '../services/prompt_engineering.dart';
+import '../models/conversation.dart';
+import '../models/document.dart';
+
+/// AI Assistant Screen — Chat avec Gemma 4 (100% offline)
 ///
-/// INTÉGRATION :
-/// 1. Copie ce fichier dans ton projet, ex: lib/screens/nazari_chat_screen.dart
-/// 2. Copie nazari_logo.png dans assets/images/nazari_logo.png
-/// 3. Dans pubspec.yaml, ajoute sous "flutter:" :
-///      assets:
-///        - assets/images/nazari_logo.png
-/// 4. Appelle NazariChatScreen() depuis ton router / MaterialApp home.
-/// ---------------------------------------------------------------
-
-class NazariColors {
-  static const black = Color(0xFF111111);
-  static const grayMid = Color(0xFF6B6B6B);
-  static const grayLight = Color(0xFF9A9A9A);
-  static const bgUser = Color(0xFFEEEEEE);
-  static const border = Color(0xFF111111);
-  static const white = Colors.white;
-}
-
-enum MessageAuthor { user, ai }
-
-class ChatMessage {
-  final MessageAuthor author;
-  final String text;
-  final List<String>? sources; // noms de documents, si author == ai
-  final DateTime time;
-
-  ChatMessage({
-    required this.author,
-    required this.text,
-    this.sources,
-    required this.time,
-  });
-}
+/// Fonctionnalités:
+/// - Envoi de messages texte à Gemma
+/// - Upload de documents (PDF, DOCX, images) comme contexte
+/// - Historique de conversation persistant (Hive)
+/// - Titre auto-généré pour chaque conversation
+/// - Indicateur "Gemma is thinking..." pendant la génération
+/// - Réponses structurées avec possibilité de sources
 
 class AiAssistantScreen extends StatefulWidget {
   const AiAssistantScreen({super.key});
@@ -47,60 +31,257 @@ class AiAssistantScreen extends StatefulWidget {
 class _AiAssistantScreenState extends State<AiAssistantScreen> {
   final TextEditingController _controller = TextEditingController();
   final ScrollController _scrollController = ScrollController();
-  final List<ChatMessage> _messages = [];
+  final FocusNode _focusNode = FocusNode();
 
-  void _handleSend() {
+  late GemmaService _gemma;
+  late ChatHistoryService _chatHistory;
+  late DocumentService _docService;
+
+  Conversation? _conversation;
+  List<Message> _messages = [];
+  bool _isLoading = false;
+  Document? _attachedDocument;
+
+  @override
+  void initState() {
+    super.initState();
+    _gemma = context.read<GemmaService>();
+    _chatHistory = context.read<ChatHistoryService>();
+    _docService = context.read<DocumentService>();
+    _loadOrCreateConversation();
+  }
+
+  @override
+  void dispose() {
+    _controller.dispose();
+    _scrollController.dispose();
+    _focusNode.dispose();
+    super.dispose();
+  }
+
+  /// Crée une nouvelle conversation ou charge la dernière
+  Future<void> _loadOrCreateConversation() async {
+    final conversations = await _chatHistory.getAllConversations();
+    if (conversations.isNotEmpty) {
+      setState(() {
+        _conversation = conversations.first;
+        _messages = List.from(_conversation!.messages);
+      });
+    }
+  }
+
+  /// Crée une nouvelle conversation si besoin
+  Future<void> _ensureConversation(String firstMessage) async {
+    if (_conversation != null) return;
+
+    // Génère un titre via Gemma (async, non bloquant pour l'UI)
+    String title = 'New Chat';
+    try {
+      title = await _gemma.generate(
+        PromptEngineering.generateTitle(firstMessage),
+      );
+      title = title.trim().replaceAll('"', '').replaceAll("'", '');
+      if (title.length > 40) title = '${title.substring(0, 40)}...';
+    } catch (_) {
+      title = firstMessage.length > 30
+          ? '${firstMessage.substring(0, 30)}...'
+          : firstMessage;
+    }
+
+    final conv = Conversation.create(title);
+    await _chatHistory.saveConversation(conv);
+    setState(() => _conversation = conv);
+  }
+
+  /// Envoi d'un message utilisateur + réponse Gemma
+  Future<void> _sendMessage() async {
     final text = _controller.text.trim();
     if (text.isEmpty) return;
 
-    setState(() {
-      _messages.add(
-        ChatMessage(
-          author: MessageAuthor.user,
-          text: text,
-          time: DateTime.now(),
-        ),
-      );
-    });
     _controller.clear();
+    _focusNode.unfocus();
 
-    // TODO: brancher ici l'appel à ton backend / modèle local.
-    // Quand la réponse arrive, ajoute-la avec :
-    // setState(() {
-    //   _messages.add(ChatMessage(
-    //     author: MessageAuthor.ai,
-    //     text: "...",
-    //     sources: ["Lecture_Notes_Week4.pdf"],
-    //     time: DateTime.now(),
-    //   ));
-    // });
+    // 1. Créer le message utilisateur
+    final userMsg = Message(
+      id: DateTime.now().millisecondsSinceEpoch.toString(),
+      role: 'user',
+      text: text,
+      timestamp: DateTime.now(),
+      attachmentPath: _attachedDocument?.filePath,
+      attachmentType: _attachedDocument?.fileType,
+    );
 
+    setState(() {
+      _messages.add(userMsg);
+      _isLoading = true;
+      _attachedDocument = null; // reset après envoi
+    });
+
+    _scrollToBottom();
+
+    // 2. Persister la conversation
+    await _ensureConversation(text);
+    _conversation!.messages.add(userMsg);
+    _conversation!.updatedAt = DateTime.now();
+    await _chatHistory.saveConversation(_conversation!);
+
+    // 3. Construire le prompt avec contexte document si présent
+    String prompt;
+    if (_attachedDocument != null && _attachedDocument!.fileType != 'image') {
+      prompt = PromptEngineering.answerQuestion(
+        text,
+        documentContext: _attachedDocument!.extractedText,
+      );
+    } else {
+      prompt = PromptEngineering.answerQuestion(text);
+    }
+
+    // 4. Appeler Gemma
+    try {
+      final response = await _gemma.generate(prompt);
+
+      final aiMsg = Message(
+        id: DateTime.now().millisecondsSinceEpoch.toString(),
+        role: 'model',
+        text: response,
+        timestamp: DateTime.now(),
+      );
+
+      setState(() {
+        _messages.add(aiMsg);
+        _isLoading = false;
+      });
+
+      // 5. Persister la réponse
+      _conversation!.messages.add(aiMsg);
+      _conversation!.updatedAt = DateTime.now();
+      await _chatHistory.saveConversation(_conversation!);
+    } catch (e) {
+      setState(() => _isLoading = false);
+      _showError('Gemma error: $e');
+    }
+
+    _scrollToBottom();
+  }
+
+  /// Upload un document depuis le gestionnaire de fichiers
+  Future<void> _pickDocument() async {
+    final result = await FilePicker.pickFiles(
+      type: FileType.custom,
+      allowedExtensions: ['pdf', 'docx', 'txt', 'jpg', 'jpeg', 'png'],
+      allowMultiple: false,
+    );
+
+    if (result == null || result.files.single.path == null) return;
+
+    setState(() => _isLoading = true);
+
+    try {
+      final doc = await _docService.uploadDocument(result.files.single.path!);
+      setState(() {
+        _attachedDocument = doc;
+        _isLoading = false;
+      });
+      _showInfo(
+        'Document attached: ${doc.fileName} (${doc.tokenEstimate} tokens)',
+      );
+    } catch (e) {
+      setState(() => _isLoading = false);
+      _showError('Failed to upload document: $e');
+    }
+  }
+
+  void _scrollToBottom() {
     Future.delayed(const Duration(milliseconds: 100), () {
       if (_scrollController.hasClients) {
         _scrollController.animateTo(
           _scrollController.position.maxScrollExtent,
-          duration: const Duration(milliseconds: 250),
+          duration: const Duration(milliseconds: 300),
           curve: Curves.easeOut,
         );
       }
     });
   }
 
+  void _showError(String msg) {
+    ScaffoldMessenger.of(context).showSnackBar(
+      SnackBar(
+        content: Text(
+          msg,
+          style: GoogleFonts.hankenGrotesk(color: Colors.white),
+        ),
+        backgroundColor: const Color(0xFFDC2626),
+        behavior: SnackBarBehavior.floating,
+        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
+      ),
+    );
+  }
+
+  void _showInfo(String msg) {
+    ScaffoldMessenger.of(context).showSnackBar(
+      SnackBar(
+        content: Text(
+          msg,
+          style: GoogleFonts.hankenGrotesk(color: Colors.white),
+        ),
+        backgroundColor: const Color(0xFF0B5D3B),
+        behavior: SnackBarBehavior.floating,
+        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
+        duration: const Duration(seconds: 3),
+      ),
+    );
+  }
+
   @override
   Widget build(BuildContext context) {
     return Scaffold(
+      backgroundColor: const Color(0xFFF9F7F2),
+      appBar: AppBar(
+        backgroundColor: const Color(0xFFF9F7F2),
+        elevation: 0,
+        centerTitle: true,
+        title: Column(
+          children: [
+            Text(
+              'AI Assistant',
+              style: GoogleFonts.hankenGrotesk(
+                fontSize: 18,
+                fontWeight: FontWeight.w600,
+                color: const Color(0xFF1F2937),
+              ),
+            ),
+            if (_conversation != null)
+              Text(
+                _conversation!.title,
+                style: GoogleFonts.hankenGrotesk(
+                  fontSize: 12,
+                  fontWeight: FontWeight.w400,
+                  color: const Color(0xFF6B7280),
+                ),
+              ),
+          ],
+        ),
+        actions: [
+          if (_conversation != null)
+            IconButton(
+              icon: const Icon(Icons.delete_outline, color: Color(0xFF6B7280)),
+              onPressed: () async {
+                await _chatHistory.deleteConversation(_conversation!.id);
+                setState(() {
+                  _conversation = null;
+                  _messages = [];
+                });
+              },
+            ),
+        ],
+      ),
       body: SafeArea(
         child: Column(
           children: [
-            // _buildTopBar(),
+            // Zone messages
             Expanded(
               child: _messages.isEmpty
-                  ? const Center(
-                      child: Text(
-                        'Ask me anything about your study!',
-                        style: TextStyle(color: NazariColors.grayLight),
-                      ),
-                    )
+                  ? _buildEmptyState()
                   : ListView.builder(
                       controller: _scrollController,
                       padding: const EdgeInsets.symmetric(
@@ -110,12 +291,88 @@ class _AiAssistantScreenState extends State<AiAssistantScreen> {
                       itemCount: _messages.length,
                       itemBuilder: (context, index) {
                         final msg = _messages[index];
-                        return msg.author == MessageAuthor.user
+                        return msg.role == 'user'
                             ? _UserBubble(message: msg)
-                            : _AiCard(message: msg);
+                            : _AiBubble(message: msg);
                       },
                     ),
             ),
+
+            // Indicateur "Gemma pense..."
+            if (_isLoading)
+              Padding(
+                padding: const EdgeInsets.symmetric(
+                  horizontal: 16,
+                  vertical: 8,
+                ),
+                child: Row(
+                  children: [
+                    Container(
+                      width: 8,
+                      height: 8,
+                      decoration: const BoxDecoration(
+                        color: Color(0xFF0B5D3B),
+                        shape: BoxShape.circle,
+                      ),
+                    ),
+                    const SizedBox(width: 8),
+                    Text(
+                      'Gemma is thinking...',
+                      style: GoogleFonts.hankenGrotesk(
+                        fontSize: 13,
+                        color: const Color(0xFF6B7280),
+                        fontStyle: FontStyle.italic,
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+
+            // Document attaché
+            if (_attachedDocument != null)
+              Padding(
+                padding: const EdgeInsets.symmetric(horizontal: 16),
+                child: Container(
+                  padding: const EdgeInsets.symmetric(
+                    horizontal: 12,
+                    vertical: 8,
+                  ),
+                  decoration: BoxDecoration(
+                    color: const Color(0xFFDCEFE5),
+                    borderRadius: BorderRadius.circular(8),
+                  ),
+                  child: Row(
+                    children: [
+                      const Icon(
+                        Icons.description,
+                        size: 16,
+                        color: Color(0xFF0B5D3B),
+                      ),
+                      const SizedBox(width: 8),
+                      Expanded(
+                        child: Text(
+                          _attachedDocument!.fileName,
+                          style: GoogleFonts.hankenGrotesk(
+                            fontSize: 12,
+                            color: const Color(0xFF0B5D3B),
+                          ),
+                          overflow: TextOverflow.ellipsis,
+                        ),
+                      ),
+                      GestureDetector(
+                        onTap: () => setState(() => _attachedDocument = null),
+                        child: const Icon(
+                          Icons.close,
+                          size: 16,
+                          color: Color(0xFF0B5D3B),
+                        ),
+                      ),
+                    ],
+                  ),
+                ),
+              ),
+
+            // Barre de saisie
             _buildInputBar(),
           ],
         ),
@@ -123,44 +380,102 @@ class _AiAssistantScreenState extends State<AiAssistantScreen> {
     );
   }
 
+  Widget _buildEmptyState() {
+    return Center(
+      child: Column(
+        mainAxisAlignment: MainAxisAlignment.center,
+        children: [
+          Container(
+            width: 64,
+            height: 64,
+            decoration: BoxDecoration(
+              color: const Color(0xFFDCEFE5),
+              borderRadius: BorderRadius.circular(16),
+            ),
+            child: const Icon(
+              Icons.psychology,
+              color: Color(0xFF0B5D3B),
+              size: 32,
+            ),
+          ),
+          const SizedBox(height: 16),
+          Text(
+            'Ask me anything about your study!',
+            style: GoogleFonts.hankenGrotesk(
+              fontSize: 16,
+              fontWeight: FontWeight.w500,
+              color: const Color(0xFF6B7280),
+            ),
+          ),
+          const SizedBox(height: 8),
+          Text(
+            'Upload a document or type a question.\nGemma 4 will answer offline.',
+            textAlign: TextAlign.center,
+            style: GoogleFonts.hankenGrotesk(
+              fontSize: 13,
+              color: const Color(0xFF9CA3AF),
+              height: 1.5,
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+
   Widget _buildInputBar() {
     return Padding(
-      padding: const EdgeInsets.fromLTRB(14, 6, 14, 6),
+      padding: const EdgeInsets.fromLTRB(14, 8, 14, 12),
       child: Container(
         decoration: BoxDecoration(
-          border: Border.all(color: NazariColors.border, width: 1.5),
-          borderRadius: BorderRadius.circular(26),
+          color: Colors.white,
+          border: Border.all(color: const Color(0xFFE5E7EB), width: 1.5),
+          borderRadius: BorderRadius.circular(24),
+          boxShadow: [
+            BoxShadow(
+              color: Colors.black.withValues(alpha: 0.04),
+              blurRadius: 8,
+              offset: const Offset(0, 2),
+            ),
+          ],
         ),
-        padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 4),
+        padding: const EdgeInsets.symmetric(horizontal: 4, vertical: 4),
         child: Row(
           children: [
             IconButton(
               icon: const Icon(Icons.attach_file, size: 20),
-              color: NazariColors.black,
-              onPressed: () {
-                // TODO: ouvrir le sélecteur de document
-              },
+              color: const Color(0xFF6B7280),
+              onPressed: _isLoading ? null : _pickDocument,
             ),
             Expanded(
               child: TextField(
                 controller: _controller,
-                decoration: const InputDecoration(
-                  hintText: 'Ask about your study',
-                  hintStyle: TextStyle(color: NazariColors.grayLight),
+                focusNode: _focusNode,
+                enabled: !_isLoading,
+                decoration: InputDecoration(
+                  hintText: 'Ask about your study...',
+                  hintStyle: GoogleFonts.hankenGrotesk(
+                    fontSize: 15,
+                    color: const Color(0xFF9CA3AF),
+                  ),
                   border: InputBorder.none,
+                  contentPadding: const EdgeInsets.symmetric(vertical: 12),
                 ),
-                onSubmitted: (_) => _handleSend(),
+                style: GoogleFonts.hankenGrotesk(
+                  fontSize: 15,
+                  color: const Color(0xFF1F2937),
+                ),
+                onSubmitted: (_) => _sendMessage(),
               ),
             ),
             Container(
               margin: const EdgeInsets.all(2),
               decoration: const BoxDecoration(
-                color: NazariColors.black,
+                color: Color(0xFF0B5D3B),
                 shape: BoxShape.circle,
               ),
               child: IconButton(
                 icon: const Icon(Icons.send, size: 16, color: Colors.white),
-                onPressed: _handleSend,
+                onPressed: _isLoading ? null : _sendMessage,
               ),
             ),
           ],
@@ -170,15 +485,18 @@ class _AiAssistantScreenState extends State<AiAssistantScreen> {
   }
 }
 
+// ═══════════════════════════════════════════════════════════
+//  BULLES DE CHAT
+// ═══════════════════════════════════════════════════════════
+
 class _UserBubble extends StatelessWidget {
-  final ChatMessage message;
+  final Message message;
   const _UserBubble({required this.message});
 
   String _formatTime(DateTime t) {
-    final hour = t.hour % 12 == 0 ? 12 : t.hour % 12;
+    final hour = t.hour.toString().padLeft(2, '0');
     final minute = t.minute.toString().padLeft(2, '0');
-    final period = t.hour >= 12 ? 'PM' : 'AM';
-    return '$hour:$minute $period';
+    return '$hour:$minute';
   }
 
   @override
@@ -189,30 +507,59 @@ class _UserBubble extends StatelessWidget {
         crossAxisAlignment: CrossAxisAlignment.end,
         children: [
           Container(
-            margin: const EdgeInsets.only(top: 10),
+            margin: const EdgeInsets.only(top: 8),
             padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
             constraints: BoxConstraints(
-              maxWidth: MediaQuery.of(context).size.width * 0.75,
+              maxWidth: MediaQuery.of(context).size.width * 0.78,
             ),
             decoration: const BoxDecoration(
-              color: NazariColors.bgUser,
+              color: Color(0xFF0B5D3B),
               borderRadius: BorderRadius.only(
                 topLeft: Radius.circular(18),
                 topRight: Radius.circular(18),
                 bottomLeft: Radius.circular(18),
-                bottomRight: Radius.circular(6),
+                bottomRight: Radius.circular(4),
               ),
             ),
             child: Text(
               message.text,
-              style: const TextStyle(fontSize: 15, color: NazariColors.black),
+              style: GoogleFonts.hankenGrotesk(
+                fontSize: 15,
+                color: Colors.white,
+                height: 1.5,
+              ),
             ),
           ),
+          if (message.attachmentPath != null)
+            Padding(
+              padding: const EdgeInsets.only(top: 4, right: 4),
+              child: Row(
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  const Icon(
+                    Icons.description,
+                    size: 12,
+                    color: Color(0xFF9CA3AF),
+                  ),
+                  const SizedBox(width: 4),
+                  Text(
+                    'Document attached',
+                    style: GoogleFonts.hankenGrotesk(
+                      fontSize: 11,
+                      color: const Color(0xFF9CA3AF),
+                    ),
+                  ),
+                ],
+              ),
+            ),
           Padding(
-            padding: const EdgeInsets.only(top: 4, right: 2),
+            padding: const EdgeInsets.only(top: 4, right: 4),
             child: Text(
-              'You • ${_formatTime(message.time)}',
-              style: const TextStyle(fontSize: 12, color: NazariColors.grayMid),
+              'You • ${_formatTime(message.timestamp)}',
+              style: GoogleFonts.hankenGrotesk(
+                fontSize: 11,
+                color: const Color(0xFF9CA3AF),
+              ),
             ),
           ),
         ],
@@ -221,9 +568,9 @@ class _UserBubble extends StatelessWidget {
   }
 }
 
-class _AiCard extends StatelessWidget {
-  final ChatMessage message;
-  const _AiCard({required this.message});
+class _AiBubble extends StatelessWidget {
+  final Message message;
+  const _AiBubble({required this.message});
 
   @override
   Widget build(BuildContext context) {
@@ -233,32 +580,54 @@ class _AiCard extends StatelessWidget {
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
           Container(
-            margin: const EdgeInsets.only(top: 10),
+            margin: const EdgeInsets.only(top: 8),
             constraints: BoxConstraints(
-              maxWidth: MediaQuery.of(context).size.width,
+              maxWidth: MediaQuery.of(context).size.width * 0.85,
             ),
-            padding: const EdgeInsets.fromLTRB(18, 16, 18, 14),
+            padding: const EdgeInsets.fromLTRB(18, 16, 18, 16),
             decoration: BoxDecoration(
-              border: Border.all(color: NazariColors.border, width: 1.5),
-              borderRadius: BorderRadius.circular(18),
+              color: Colors.white,
+              border: Border.all(color: const Color(0xFFE5E7EB), width: 1.5),
+              borderRadius: const BorderRadius.only(
+                topLeft: Radius.circular(18),
+                topRight: Radius.circular(18),
+                bottomLeft: Radius.circular(4),
+                bottomRight: Radius.circular(18),
+              ),
+              boxShadow: [
+                BoxShadow(
+                  color: Colors.black.withValues(alpha: 0.03),
+                  blurRadius: 6,
+                  offset: const Offset(0, 2),
+                ),
+              ],
             ),
             child: Column(
               crossAxisAlignment: CrossAxisAlignment.start,
               children: [
                 Row(
-                  children: const [
-                    Icon(
-                      Icons.psychology_outlined,
-                      size: 18,
-                      color: NazariColors.black,
+                  children: [
+                    Container(
+                      width: 24,
+                      height: 24,
+                      decoration: BoxDecoration(
+                        color: const Color(0xFFDCEFE5),
+                        borderRadius: BorderRadius.circular(6),
+                      ),
+                      child: const Icon(
+                        Icons.psychology,
+                        size: 14,
+                        color: Color(0xFF0B5D3B),
+                      ),
                     ),
-                    SizedBox(width: 8),
+                    const SizedBox(width: 8),
                     Text(
-                      'NAZARIAI ANALYSIS',
-                      style: TextStyle(
-                        fontSize: 14,
-                        fontWeight: FontWeight.w800,
-                        letterSpacing: 0.4,
+                      'NAZARIAI',
+                      style: GoogleFonts.hankenGrotesk(
+                        fontSize: 12,
+                        fontWeight: FontWeight.w700,
+                        color: const Color(0xFF0B5D3B),
+                        letterSpacing: 0.6,
                       ),
                     ),
                   ],
@@ -266,61 +635,23 @@ class _AiCard extends StatelessWidget {
                 const SizedBox(height: 12),
                 Text(
                   message.text,
-                  style: const TextStyle(
+                  style: GoogleFonts.hankenGrotesk(
                     fontSize: 15,
                     height: 1.55,
-                    color: NazariColors.black,
+                    color: const Color(0xFF1F2937),
                   ),
                 ),
-                if (message.sources != null && message.sources!.isNotEmpty) ...[
-                  const SizedBox(height: 16),
-                  const Divider(color: Color(0xFFD8D8D8), height: 1),
-                  const SizedBox(height: 10),
-                  const Text(
-                    'LOCAL SOURCES',
-                    style: TextStyle(fontSize: 14, fontWeight: FontWeight.bold),
-                  ),
-                  const SizedBox(height: 10),
-                  ...message.sources!.map(
-                    (source) => Padding(
-                      padding: const EdgeInsets.only(bottom: 8),
-                      child: Container(
-                        padding: const EdgeInsets.symmetric(
-                          horizontal: 14,
-                          vertical: 11,
-                        ),
-                        decoration: BoxDecoration(
-                          border: Border.all(
-                            color: NazariColors.border,
-                            width: 1.5,
-                          ),
-                          borderRadius: BorderRadius.circular(22),
-                        ),
-                        child: Row(
-                          children: [
-                            const Icon(Icons.description_outlined, size: 15),
-                            const SizedBox(width: 8),
-                            Expanded(
-                              child: Text(
-                                source,
-                                style: const TextStyle(fontSize: 13.5),
-                                overflow: TextOverflow.ellipsis,
-                              ),
-                            ),
-                          ],
-                        ),
-                      ),
-                    ),
-                  ),
-                ],
               ],
             ),
           ),
-          const Padding(
-            padding: EdgeInsets.only(top: 4, left: 2),
+          Padding(
+            padding: const EdgeInsets.only(top: 4, left: 4),
             child: Text(
               'NazariAI • Locally Processed',
-              style: TextStyle(fontSize: 12, color: NazariColors.grayMid),
+              style: GoogleFonts.hankenGrotesk(
+                fontSize: 11,
+                color: const Color(0xFF9CA3AF),
+              ),
             ),
           ),
         ],

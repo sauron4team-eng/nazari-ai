@@ -1,6 +1,9 @@
 import 'dart:math' show pi, sin;
 import 'package:flutter/material.dart';
 import 'package:google_fonts/google_fonts.dart';
+import 'package:provider/provider.dart';
+import 'package:file_picker/file_picker.dart';
+import '../services/model_manager.dart';
 
 class HomeScreen extends StatefulWidget {
   const HomeScreen({super.key});
@@ -15,28 +18,21 @@ class _HomeScreenState extends State<HomeScreen> with TickerProviderStateMixin {
   late AnimationController _floatController2;
   late AnimationController _floatController3;
 
-  double _parallaxX = 0;
-  double _parallaxY = 0;
-
   @override
   void initState() {
     super.initState();
-
     _staggerController = AnimationController(
       vsync: this,
       duration: const Duration(milliseconds: 1400),
     );
-
     _floatController1 = AnimationController(
       vsync: this,
       duration: const Duration(seconds: 6),
     )..repeat();
-
     _floatController2 = AnimationController(
       vsync: this,
       duration: const Duration(seconds: 6),
     )..repeat();
-
     _floatController3 = AnimationController(
       vsync: this,
       duration: const Duration(seconds: 6),
@@ -64,27 +60,248 @@ class _HomeScreenState extends State<HomeScreen> with TickerProviderStateMixin {
             curve: Interval(delay, delay + 0.35, curve: Curves.easeOutCubic),
           ),
         );
-
     final opacityAnimation = Tween<double>(begin: 0.0, end: 1.0).animate(
       CurvedAnimation(
         parent: _staggerController,
         curve: Interval(delay, delay + 0.35, curve: Curves.easeOut),
       ),
     );
-
     return AnimatedBuilder(
       animation: _staggerController,
-      builder: (context, _) {
-        return Transform.translate(
-          offset: slideAnimation.value,
-          child: Opacity(opacity: opacityAnimation.value, child: child),
-        );
-      },
+      builder: (context, _) => Transform.translate(
+        offset: slideAnimation.value,
+        child: Opacity(opacity: opacityAnimation.value, child: child),
+      ),
     );
   }
 
   @override
   Widget build(BuildContext context) {
+    return Consumer<ModelManager>(
+      builder: (context, modelManager, _) {
+        if (!modelManager.isInstalled &&
+            modelManager.status != ModelStatus.checking) {
+          return _buildModelSetupScreen(modelManager);
+        }
+        return _buildHomeContent();
+      },
+    );
+  }
+
+  // ═══════════════════════════════════════════════════════════
+  //  MODEL SETUP SCREEN (première fois)
+  // ═══════════════════════════════════════════════════════════
+  Widget _buildModelSetupScreen(ModelManager manager) {
+    final isDownloading = manager.status == ModelStatus.downloading;
+    final isInstalling = manager.status == ModelStatus.installing;
+    final isBusy = isDownloading || isInstalling;
+
+    return Scaffold(
+      backgroundColor: const Color(0xFFF9F7F2),
+      body: SafeArea(
+        child: LayoutBuilder(
+          builder: (context, constraints) {
+            return SingleChildScrollView(
+              padding: const EdgeInsets.symmetric(horizontal: 24),
+              child: ConstrainedBox(
+                constraints: BoxConstraints(minHeight: constraints.maxHeight),
+                child: Column(
+                  mainAxisAlignment: MainAxisAlignment.center,
+                  crossAxisAlignment: CrossAxisAlignment.center,
+                  children: [
+                    const SizedBox(height: 32),
+                    const Icon(
+                      Icons.school,
+                      color: Color(0xFF0B5D3B),
+                      size: 64,
+                    ),
+                    const SizedBox(height: 16),
+                    Text(
+                      'NazariAI',
+                      style: GoogleFonts.hankenGrotesk(
+                        fontSize: 32,
+                        fontWeight: FontWeight.w700,
+                        color: const Color(0xFF0B5D3B),
+                      ),
+                    ),
+                    const SizedBox(height: 8),
+                    Text(
+                      'Powered by Gemma 4 — 100% Offline',
+                      style: GoogleFonts.hankenGrotesk(
+                        fontSize: 14,
+                        color: const Color(0xFF6B7280),
+                      ),
+                    ),
+                    const SizedBox(height: 48),
+                    Container(
+                      padding: const EdgeInsets.all(24),
+                      decoration: BoxDecoration(
+                        color: Colors.white,
+                        borderRadius: BorderRadius.circular(16),
+                        border: Border.all(color: const Color(0xFFE5E7EB)),
+                        boxShadow: [
+                          BoxShadow(
+                            color: Colors.black.withOpacity(0.04),
+                            blurRadius: 12,
+                            offset: const Offset(0, 4),
+                          ),
+                        ],
+                      ),
+                      child: Column(
+                        children: [
+                          Icon(
+                            isBusy ? Icons.downloading : Icons.memory,
+                            color: const Color(0xFF0B5D3B),
+                            size: 40,
+                          ),
+                          const SizedBox(height: 16),
+                          Text(
+                            isDownloading
+                                ? 'Downloading Gemma 4...'
+                                : isInstalling
+                                ? 'Installing Gemma 4...'
+                                : 'Gemma 4 Not Installed',
+                            textAlign: TextAlign.center,
+                            style: GoogleFonts.hankenGrotesk(
+                              fontSize: 20,
+                              fontWeight: FontWeight.w600,
+                              color: const Color(0xFF1F2937),
+                            ),
+                          ),
+                          const SizedBox(height: 8),
+                          Text(
+                            'Gemma 4 E2B (~2.4 GB) is required to run NazariAI offline. Choose how to install it.',
+                            textAlign: TextAlign.center,
+                            style: GoogleFonts.hankenGrotesk(
+                              fontSize: 14,
+                              color: const Color(0xFF6B7280),
+                              height: 1.5,
+                            ),
+                          ),
+                          if (isDownloading) ...[
+                            const SizedBox(height: 20),
+                            ClipRRect(
+                              borderRadius: BorderRadius.circular(8),
+                              child: LinearProgressIndicator(
+                                value: manager.downloadProgress,
+                                minHeight: 8,
+                                backgroundColor: const Color(0xFFDCEFE5),
+                                valueColor: const AlwaysStoppedAnimation(
+                                  Color(0xFF0B5D3B),
+                                ),
+                              ),
+                            ),
+                            const SizedBox(height: 8),
+                            Text(
+                              '${(manager.downloadProgress * 100).toStringAsFixed(0)}% — ${(ModelManager.modelFileSizeBytes / 1e9).toStringAsFixed(1)} GB',
+                              style: GoogleFonts.hankenGrotesk(
+                                fontSize: 12,
+                                color: const Color(0xFF6B7280),
+                              ),
+                            ),
+                          ],
+                          if (manager.errorMessage != null) ...[
+                            const SizedBox(height: 12),
+                            Text(
+                              manager.errorMessage!,
+                              textAlign: TextAlign.center,
+                              style: GoogleFonts.hankenGrotesk(
+                                fontSize: 12,
+                                color: const Color(0xFFDC2626),
+                              ),
+                            ),
+                          ],
+                          const SizedBox(height: 24),
+                          if (!isBusy) ...[
+                            SizedBox(
+                              width: double.infinity,
+                              child: ElevatedButton.icon(
+                                onPressed: () => manager.downloadFromWeb(),
+                                icon: const Icon(Icons.download, size: 18),
+                                label: Text(
+                                  'Download from Web',
+                                  style: GoogleFonts.hankenGrotesk(
+                                    fontSize: 14,
+                                    fontWeight: FontWeight.w600,
+                                  ),
+                                ),
+                                style: ElevatedButton.styleFrom(
+                                  backgroundColor: const Color(0xFF0B5D3B),
+                                  foregroundColor: Colors.white,
+                                  padding: const EdgeInsets.symmetric(
+                                    vertical: 16,
+                                  ),
+                                  shape: RoundedRectangleBorder(
+                                    borderRadius: BorderRadius.circular(12),
+                                  ),
+                                ),
+                              ),
+                            ),
+                            const SizedBox(height: 12),
+                            SizedBox(
+                              width: double.infinity,
+                              child: OutlinedButton.icon(
+                                onPressed: () async {
+                                  final result = await FilePicker.pickFiles(
+                                    type: FileType.custom,
+                                    allowedExtensions: ['litertlm'],
+                                  );
+                                  if (result != null &&
+                                      result.files.single.path != null) {
+                                    await manager.importFromLocalFile(
+                                      result.files.single.path!,
+                                    );
+                                  }
+                                },
+                                icon: const Icon(Icons.folder_open, size: 18),
+                                label: Text(
+                                  'Import from Device',
+                                  style: GoogleFonts.hankenGrotesk(
+                                    fontSize: 14,
+                                    fontWeight: FontWeight.w600,
+                                    color: const Color(0xFF0B5D3B),
+                                  ),
+                                ),
+                                style: OutlinedButton.styleFrom(
+                                  side: const BorderSide(
+                                    color: Color(0xFF0B5D3B),
+                                  ),
+                                  padding: const EdgeInsets.symmetric(
+                                    vertical: 16,
+                                  ),
+                                  shape: RoundedRectangleBorder(
+                                    borderRadius: BorderRadius.circular(12),
+                                  ),
+                                ),
+                              ),
+                            ),
+                          ],
+                        ],
+                      ),
+                    ),
+                    const SizedBox(height: 32),
+                    Text(
+                      'Your data stays on your device. No cloud required.',
+                      style: GoogleFonts.hankenGrotesk(
+                        fontSize: 12,
+                        color: const Color(0xFF9CA3AF),
+                      ),
+                    ),
+                    const SizedBox(height: 24),
+                  ],
+                ),
+              ),
+            );
+          },
+        ),
+      ),
+    );
+  }
+
+  // ═══════════════════════════════════════════════════════════
+  //  HOME CONTENT
+  // ═══════════════════════════════════════════════════════════
+  Widget _buildHomeContent() {
     final size = MediaQuery.of(context).size;
     final isDesktop = size.width > 900;
 
@@ -96,7 +313,6 @@ class _HomeScreenState extends State<HomeScreen> with TickerProviderStateMixin {
           physics: const BouncingScrollPhysics(),
           child: Column(
             children: [
-              // ── Logo Header ──
               Padding(
                 padding: const EdgeInsets.symmetric(vertical: 16),
                 child: Row(
@@ -114,22 +330,16 @@ class _HomeScreenState extends State<HomeScreen> with TickerProviderStateMixin {
                         fontSize: 20,
                         fontWeight: FontWeight.w700,
                         color: const Color(0xFF0B5D3B),
-                        height: 1.4,
                       ),
                     ),
                   ],
                 ),
               ),
-
-              // ── Main Content ──
               Padding(
                 padding: const EdgeInsets.symmetric(horizontal: 16),
                 child: isDesktop ? _buildDesktopLayout() : _buildMobileLayout(),
               ),
-
               const SizedBox(height: 40),
-
-              // ── Footer ──
               Padding(
                 padding: const EdgeInsets.symmetric(
                   horizontal: 16,
@@ -197,19 +407,12 @@ class _HomeScreenState extends State<HomeScreen> with TickerProviderStateMixin {
     );
   }
 
-  // ═══════════════════════════════════════════════════════════
-  //  MOBILE LAYOUT (matches screen.png exactly)
-  // ═══════════════════════════════════════════════════════════
   Widget _buildMobileLayout() {
     return Column(
       crossAxisAlignment: CrossAxisAlignment.center,
       children: [
-        // Offline Badge
         _buildStaggeredItem(Center(child: _buildOfflineBadge()), 0.0),
-
         const SizedBox(height: 24),
-
-        // Title
         _buildStaggeredItem(
           Text(
             'Your Offline AI Academic Assistant.',
@@ -224,10 +427,7 @@ class _HomeScreenState extends State<HomeScreen> with TickerProviderStateMixin {
           ),
           0.1,
         ),
-
         const SizedBox(height: 16),
-
-        // Subtitle
         _buildStaggeredItem(
           Text(
             'Study anywhere, anytime. NazariAI processes your documents locally, ensuring your focus remains unbroken even without an internet connection.',
@@ -241,10 +441,7 @@ class _HomeScreenState extends State<HomeScreen> with TickerProviderStateMixin {
           ),
           0.2,
         ),
-
         const SizedBox(height: 24),
-
-        // Buttons
         _buildStaggeredItem(
           Column(
             children: [
@@ -260,7 +457,9 @@ class _HomeScreenState extends State<HomeScreen> with TickerProviderStateMixin {
                       borderRadius: BorderRadius.circular(12),
                     ),
                     elevation: 8,
-                    shadowColor: const Color(0xFF0B5D3B).withOpacity(0.25),
+                    shadowColor: const Color(
+                      0xFF0B5D3B,
+                    ).withValues(alpha: 0.25),
                   ),
                   child: Row(
                     mainAxisAlignment: MainAxisAlignment.center,
@@ -271,7 +470,6 @@ class _HomeScreenState extends State<HomeScreen> with TickerProviderStateMixin {
                           fontSize: 16,
                           fontWeight: FontWeight.w600,
                           color: Colors.white,
-                          height: 1.4,
                         ),
                       ),
                       const SizedBox(width: 8),
@@ -305,7 +503,6 @@ class _HomeScreenState extends State<HomeScreen> with TickerProviderStateMixin {
                           fontSize: 16,
                           fontWeight: FontWeight.w600,
                           color: const Color(0xFF0B5D3B),
-                          height: 1.4,
                         ),
                       ),
                       const SizedBox(width: 8),
@@ -318,10 +515,7 @@ class _HomeScreenState extends State<HomeScreen> with TickerProviderStateMixin {
           ),
           0.28,
         ),
-
         const SizedBox(height: 24),
-
-        // Trust Badges
         _buildStaggeredItem(
           Row(
             mainAxisAlignment: MainAxisAlignment.center,
@@ -333,23 +527,16 @@ class _HomeScreenState extends State<HomeScreen> with TickerProviderStateMixin {
           ),
           0.36,
         ),
-
         const SizedBox(height: 32),
-
-        // Bento Cards
         _buildStaggeredItem(_buildBentoCards(showImage: false), 0.42),
       ],
     );
   }
 
-  // ═══════════════════════════════════════════════════════════
-  //  DESKTOP LAYOUT (matches the responsive HTML)
-  // ═══════════════════════════════════════════════════════════
   Widget _buildDesktopLayout() {
     return Row(
       crossAxisAlignment: CrossAxisAlignment.center,
       children: [
-        // Left column — text content
         Expanded(
           flex: 6,
           child: Column(
@@ -359,7 +546,7 @@ class _HomeScreenState extends State<HomeScreen> with TickerProviderStateMixin {
               const SizedBox(height: 24),
               _buildStaggeredItem(
                 Text(
-                  'Your Offline AI Academic Assistant.',
+                  'Your Offline AI\nAcademic Assistant.',
                   style: GoogleFonts.hankenGrotesk(
                     fontSize: 48,
                     fontWeight: FontWeight.w700,
@@ -471,10 +658,7 @@ class _HomeScreenState extends State<HomeScreen> with TickerProviderStateMixin {
             ],
           ),
         ),
-
         const SizedBox(width: 32),
-
-        // Right column — bento cards
         Expanded(
           flex: 6,
           child: _buildStaggeredItem(_buildBentoCards(showImage: true), 0.42),
@@ -483,7 +667,6 @@ class _HomeScreenState extends State<HomeScreen> with TickerProviderStateMixin {
     );
   }
 
-  // ── Offline Badge ──
   Widget _buildOfflineBadge() {
     return Container(
       padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 6),
@@ -510,7 +693,6 @@ class _HomeScreenState extends State<HomeScreen> with TickerProviderStateMixin {
     );
   }
 
-  // ── Trust Badge ──
   Widget _buildTrustBadge(IconData icon, String label) {
     return Row(
       mainAxisSize: MainAxisSize.min,
@@ -530,14 +712,12 @@ class _HomeScreenState extends State<HomeScreen> with TickerProviderStateMixin {
     );
   }
 
-  // ── Bento Cards Stack ──
   Widget _buildBentoCards({required bool showImage}) {
     return SizedBox(
       height: 380,
       child: Stack(
         clipBehavior: Clip.none,
         children: [
-          // Background glow
           Positioned.fill(
             child: Container(
               decoration: BoxDecoration(
@@ -552,8 +732,6 @@ class _HomeScreenState extends State<HomeScreen> with TickerProviderStateMixin {
               ),
             ),
           ),
-
-          // Cards Grid
           Padding(
             padding: const EdgeInsets.all(12),
             child: Column(
@@ -590,8 +768,6 @@ class _HomeScreenState extends State<HomeScreen> with TickerProviderStateMixin {
               ],
             ),
           ),
-
-          // Student Image Overlay (desktop only)
           if (showImage)
             Positioned(
               bottom: -20,
@@ -628,7 +804,6 @@ class _HomeScreenState extends State<HomeScreen> with TickerProviderStateMixin {
     );
   }
 
-  // ── Floating Animation Wrapper ──
   Widget _buildFloatingCard({
     required AnimationController controller,
     required double phase,
@@ -648,7 +823,6 @@ class _HomeScreenState extends State<HomeScreen> with TickerProviderStateMixin {
     );
   }
 
-  // ── Document Card ──
   Widget _buildDocumentCard() {
     return Container(
       padding: const EdgeInsets.all(16),
@@ -713,7 +887,6 @@ class _HomeScreenState extends State<HomeScreen> with TickerProviderStateMixin {
     );
   }
 
-  // ── AI Card ──
   Widget _buildAICard() {
     return Container(
       padding: const EdgeInsets.all(16),
@@ -790,7 +963,6 @@ class _HomeScreenState extends State<HomeScreen> with TickerProviderStateMixin {
     );
   }
 
-  // ── Study Session Card ──
   Widget _buildStudySessionCard() {
     return Container(
       padding: const EdgeInsets.all(16),

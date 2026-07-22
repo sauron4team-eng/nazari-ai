@@ -1,3 +1,6 @@
+import 'dart:convert';
+import 'dart:io';
+import 'package:path/path.dart' as p;
 import 'package:flutter/material.dart';
 
 /// ---------------------------------------------------------------
@@ -38,7 +41,9 @@ class ChatMessage {
 }
 
 class AiAssistantScreen extends StatefulWidget {
-  const AiAssistantScreen({super.key});
+  final String? initialFilePath;
+
+  const AiAssistantScreen({super.key, this.initialFilePath});
 
   @override
   State<AiAssistantScreen> createState() => _AiAssistantScreenState();
@@ -48,6 +53,121 @@ class _AiAssistantScreenState extends State<AiAssistantScreen> {
   final TextEditingController _controller = TextEditingController();
   final ScrollController _scrollController = ScrollController();
   final List<ChatMessage> _messages = [];
+  String? _attachedFilePath;
+  String? _attachedFileName;
+  int? _attachedFileSize;
+  bool _isLoadingFile = false;
+  String? _fileLoadError;
+  String? _attachedFileContent;
+  List<String> _documentChunks = [];
+
+  @override
+  void initState() {
+    super.initState();
+    if (widget.initialFilePath != null) {
+      _attachFile(widget.initialFilePath!);
+    }
+  }
+
+  Future<void> _attachFile(String path) async {
+    setState(() {
+      _isLoadingFile = true;
+      _fileLoadError = null;
+    });
+
+    try {
+      final file = File(path);
+      if (!await file.exists()) {
+        throw Exception('Fichier introuvable : $path');
+      }
+
+      final extension = p.extension(path).replaceFirst('.', '').toLowerCase();
+      final text = await _extractTextFromFile(file, extension);
+      if (text.trim().isEmpty) {
+        throw Exception('Le document ne contient pas de texte exploitable.');
+      }
+
+      final bytes = await file.length();
+      final chunks = _chunkDocumentText(text);
+
+      setState(() {
+        _attachedFilePath = path;
+        _attachedFileName = p.basename(path);
+        _attachedFileSize = bytes;
+        _attachedFileContent = text;
+        _documentChunks = chunks;
+      });
+      debugPrint('Fichier attaché : $_attachedFileName');
+      _addAiMessage(
+        'Document "${_attachedFileName!}" chargé localement. Vous pouvez maintenant poser une question sur son contenu.',
+        sources: [_attachedFileName!],
+      );
+    } catch (e) {
+      setState(() {
+        _fileLoadError = e.toString();
+        _attachedFilePath = null;
+        _attachedFileName = null;
+        _attachedFileSize = null;
+        _attachedFileContent = null;
+        _documentChunks = [];
+      });
+    } finally {
+      if (mounted) {
+        setState(() {
+          _isLoadingFile = false;
+        });
+      }
+    }
+  }
+
+  Future<String> _extractTextFromFile(File file, String extension) async {
+    if (extension == 'txt') {
+      return await file.readAsString(encoding: utf8);
+    }
+
+    final bytes = await file.readAsBytes();
+    if (extension == 'pdf' || extension == 'doc' || extension == 'docx') {
+      // Extraction simple en UTF-8 comme fallback, car aucun parseur spécialisé
+      // n'est installé. Remplacer par un parseur réel si disponible.
+      return utf8.decode(bytes, allowMalformed: true);
+    }
+
+    return utf8.decode(bytes, allowMalformed: true);
+  }
+
+  List<String> _chunkDocumentText(String text) {
+    const maxChunkSize = 800;
+    final chunks = <String>[];
+    final normalized = text.replaceAll('\r\n', '\n').trim();
+    for (var start = 0; start < normalized.length; start += maxChunkSize) {
+      final end = (start + maxChunkSize).clamp(0, normalized.length);
+      chunks.add(normalized.substring(start, end));
+    }
+    return chunks;
+  }
+
+  void _addAiMessage(String text, {List<String>? sources}) {
+    setState(() {
+      _messages.add(
+        ChatMessage(
+          author: MessageAuthor.ai,
+          text: text,
+          sources: sources,
+          time: DateTime.now(),
+        ),
+      );
+    });
+
+    Future.delayed(const Duration(milliseconds: 100), () {
+      if (_scrollController.hasClients) {
+        _scrollController.animateTo(
+          _scrollController.position.maxScrollExtent,
+          duration: const Duration(milliseconds: 250),
+          curve: Curves.easeOut,
+        );
+      }
+    });
+  }
 
   void _handleSend() {
     final text = _controller.text.trim();
@@ -64,26 +184,32 @@ class _AiAssistantScreenState extends State<AiAssistantScreen> {
     });
     _controller.clear();
 
-    // TODO: brancher ici l'appel à ton backend / modèle local.
-    // Quand la réponse arrive, ajoute-la avec :
-    // setState(() {
-    //   _messages.add(ChatMessage(
-    //     author: MessageAuthor.ai,
-    //     text: "...",
-    //     sources: ["Lecture_Notes_Week4.pdf"],
-    //     time: DateTime.now(),
-    //   ));
-    // });
+    final response = _generateLocalResponse(text);
+    _addAiMessage(
+      response,
+      sources: _attachedFileName != null ? [_attachedFileName!] : null,
+    );
+  }
 
-    Future.delayed(const Duration(milliseconds: 100), () {
-      if (_scrollController.hasClients) {
-        _scrollController.animateTo(
-          _scrollController.position.maxScrollExtent,
-          duration: const Duration(milliseconds: 250),
-          curve: Curves.easeOut,
-        );
-      }
-    });
+  String _generateLocalResponse(String query) {
+    if (_attachedFileContent == null || _attachedFileContent!.isEmpty) {
+      return 'Aucun document chargé. Cliquez sur un fichier dans l’écran Documents pour le charger et analyser son contenu.';
+    }
+
+    final queryLower = query.toLowerCase();
+    final matchingChunk = _documentChunks.firstWhere(
+      (chunk) => chunk.toLowerCase().contains(queryLower),
+      orElse: () => _documentChunks.isNotEmpty ? _documentChunks.first : '',
+    );
+
+    if (matchingChunk.isEmpty) {
+      return 'J’ai chargé "${_attachedFileName}", mais je n’ai pas trouvé d’extrait clair pour "$query". Pose une question plus précise ou vérifie le document.';
+    }
+
+    final excerpt = matchingChunk.length > 250
+        ? '${matchingChunk.substring(0, 250).trim()}...'
+        : matchingChunk.trim();
+    return 'Hi I am your AI assistant. The attached file is titled: "${_attachedFileName}". Please ask a more specific question about the document for a better answer.';
   }
 
   @override
@@ -92,7 +218,10 @@ class _AiAssistantScreenState extends State<AiAssistantScreen> {
       body: SafeArea(
         child: Column(
           children: [
-            // _buildTopBar(),
+            if (_isLoadingFile ||
+                _attachedFileName != null ||
+                _fileLoadError != null)
+              _buildAttachmentBanner(),
             Expanded(
               child: _messages.isEmpty
                   ? const Center(
@@ -165,6 +294,75 @@ class _AiAssistantScreenState extends State<AiAssistantScreen> {
             ),
           ],
         ),
+      ),
+    );
+  }
+
+  Widget _buildAttachmentBanner() {
+    return Container(
+      width: double.infinity,
+      color: const Color(0xFFF5F5F5),
+      padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
+      child: Row(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Expanded(
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                if (_isLoadingFile)
+                  const Text(
+                    'Chargement du document...',
+                    style: TextStyle(fontSize: 14, fontWeight: FontWeight.w600),
+                  )
+                else if (_fileLoadError != null)
+                  const Text(
+                    'Erreur de chargement du document',
+                    style: TextStyle(
+                      fontSize: 14,
+                      fontWeight: FontWeight.w600,
+                      color: Colors.red,
+                    ),
+                  )
+                else
+                  Text(
+                    'Document chargé : ${_attachedFileName ?? 'Aucun document'}',
+                    style: const TextStyle(
+                      fontSize: 14,
+                      fontWeight: FontWeight.w600,
+                    ),
+                  ),
+                const SizedBox(height: 4),
+                Text(
+                  _isLoadingFile
+                      ? 'Veuillez patienter...'
+                      : _fileLoadError ??
+                            _attachedFilePath ??
+                            'Aucun document attaché',
+                  maxLines: 2,
+                  overflow: TextOverflow.ellipsis,
+                  style: TextStyle(
+                    fontSize: 12,
+                    color: _fileLoadError != null
+                        ? Colors.red
+                        : NazariColors.grayMid,
+                  ),
+                ),
+              ],
+            ),
+          ),
+          if (!_isLoadingFile && _attachedFileSize != null)
+            Padding(
+              padding: const EdgeInsets.only(left: 12),
+              child: Text(
+                '${(_attachedFileSize! / 1024).toStringAsFixed(1)} KB',
+                style: const TextStyle(
+                  fontSize: 12,
+                  color: NazariColors.grayMid,
+                ),
+              ),
+            ),
+        ],
       ),
     );
   }

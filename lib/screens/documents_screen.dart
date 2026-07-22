@@ -1,4 +1,10 @@
+import 'dart:io';
+import 'package:path/path.dart' as p;
+
+import 'package:file_picker/file_picker.dart';
 import 'package:flutter/material.dart';
+import 'package:nazariai/routes/route_names.dart';
+import 'package:nazariai/screens/ai_assistant_screen.dart';
 
 // ---------------------------------------------------------------------------
 // NazariAI - Documents Screen
@@ -35,33 +41,26 @@ const Color colorSuccess = Color(0xFF22C55E);
 const double _breakpointSmallPhone = 360; // très petits écrans
 const double _breakpointWide = 700; // bascule bento grid en 2 colonnes
 
+//-----FUNCTIONS---------------------------------------------
+
+String _getIcon(String extension) {
+  switch (extension) {
+    case 'pdf':
+      return 'picture_as_pdf';
+    case 'doc':
+    case 'docx':
+      return 'description';
+    case 'txt':
+      return 'article';
+    default:
+      return 'insert_drive_file';
+  }
+}
+
+//---------------navigate to page-----------------------
+
 // -------------------- Modèle de données simple (Map, pas de classe métier) -
-final List<Map<String, String>> _allDocuments = [
-  {
-    'title': 'Macroeconomics_Ch4.pdf',
-    'meta': 'Added 2h ago • 4.2 MB',
-    'icon': 'picture_as_pdf',
-    'type': 'pdf',
-  },
-  {
-    'title': 'History_Thesis_Draft.docx',
-    'meta': 'Added Yesterday • 1.1 MB',
-    'icon': 'description',
-    'type': 'doc',
-  },
-  {
-    'title': 'Lab_Results_Bio.xlsx',
-    'meta': 'Added 3 days ago • 850 KB',
-    'icon': 'lab_profile',
-    'type': 'doc',
-  },
-  {
-    'title': 'Neural_Networks_Intro.pdf',
-    'meta': 'Added 5 days ago • 12.4 MB',
-    'icon': 'picture_as_pdf',
-    'type': 'pdf',
-  },
-];
+final List<Map<String, String>> _allDocuments = [];
 
 // -------------------- Widget public à appeler depuis main.dart -------------
 class DocumentsScreen extends StatefulWidget {
@@ -75,6 +74,51 @@ class _DocumentsScreenState extends State<DocumentsScreen> {
   final TextEditingController _searchController = TextEditingController();
   String _query = '';
   String _selectedFilter = 'All'; // 'All' | 'PDFs' | 'Documents'
+  final List<Map<String, dynamic>> _selectedDocuments = [];
+
+  Future<void> _addDocument() async {
+    try {
+      FilePickerResult? result = await FilePicker.pickFiles(
+        type: FileType.custom,
+        allowedExtensions: ['pdf', 'doc', 'docx', 'txt'],
+      );
+
+      if (result == null || result.files.isEmpty) return;
+
+      final file = result.files.first;
+      final path = file.path;
+      if (path == null) return;
+
+      final extension =
+          (file.extension ?? p.extension(path).replaceFirst('.', ''))
+              .toLowerCase();
+      final sizeMb = (file.size / (1024 * 1024)).toStringAsFixed(1);
+
+      final shortPath = path.length > 120
+          ? '...${path.substring(path.length - 120)}'
+          : path;
+      debugPrint('Chemin sélectionné (raccourci) : $shortPath');
+      debugPrint('Nom du fichier : ${file.name}');
+
+      if (_selectedDocuments.any((doc) => doc['path'] == path)) {
+        return;
+      }
+
+      setState(() {
+        _selectedDocuments.add({
+          'title': file.name,
+          'type': extension,
+          'size': file.size,
+          'meta': 'Added just now • $sizeMb MB',
+          'icon': _getIcon(extension),
+          'path': path,
+        });
+      });
+      print('Document ajouté : ${file.name}');
+    } catch (e) {
+      debugPrint('Erreur lors de l\'ajout du document : $e');
+    }
+  }
 
   @override
   void initState() {
@@ -92,13 +136,19 @@ class _DocumentsScreenState extends State<DocumentsScreen> {
     super.dispose();
   }
 
-  List<Map<String, String>> get _filteredDocuments {
-    return _allDocuments.where((doc) {
+  List<Map<String, dynamic>> get _filteredDocuments {
+    final docs = <Map<String, dynamic>>[];
+    docs.addAll(_selectedDocuments);
+
+    return docs.where((doc) {
       final matchesQuery = doc['title']!.toLowerCase().contains(_query);
       final matchesFilter =
           _selectedFilter == 'All' ||
           (_selectedFilter == 'PDFs' && doc['type'] == 'pdf') ||
-          (_selectedFilter == 'Documents' && doc['type'] == 'doc');
+          (_selectedFilter == 'Documents' &&
+              (doc['type'] == 'doc' ||
+                  doc['type'] == 'docx' ||
+                  doc['type'] == 'txt'));
       return matchesQuery && matchesFilter;
     }).toList();
   }
@@ -507,11 +557,38 @@ class _DocumentsScreenState extends State<DocumentsScreen> {
             separatorBuilder: (context, index) => const SizedBox(height: 12),
             itemBuilder: (context, index) {
               final doc = docs[index];
-              return _buildDocumentCard(
-                title: doc['title']!,
-                meta: doc['meta']!,
-                iconName: doc['icon']!,
-                type: doc['type']!,
+              final path = doc['path'] as String?;
+              return GestureDetector(
+                onTap: () {
+                  if (path != null && path.isNotEmpty) {
+                    Navigator.push(
+                      context,
+                      MaterialPageRoute(
+                        builder: (context) => AiAssistantScreen(
+                          initialFilePath: path,
+                        ),
+                      ),
+                    );
+                  }
+                },
+                child: _buildDocumentCard(
+                  title: doc['title']!,
+                  meta: doc['meta']!,
+                  iconName: doc['icon']!,
+                  type: doc['type']!,
+                  onSummarize: path != null && path.isNotEmpty
+                      ? () {
+                          Navigator.push(
+                            context,
+                            MaterialPageRoute(
+                              builder: (context) => AiAssistantScreen(
+                                initialFilePath: path,
+                              ),
+                            ),
+                          );
+                        }
+                      : null,
+                ),
               );
             },
           ),
@@ -557,6 +634,7 @@ class _DocumentsScreenState extends State<DocumentsScreen> {
     required String meta,
     required String iconName,
     required String type,
+    VoidCallback? onSummarize,
   }) {
     return Container(
       width: double.infinity,
@@ -643,7 +721,7 @@ class _DocumentsScreenState extends State<DocumentsScreen> {
             children: [
               Expanded(
                 child: ElevatedButton(
-                  onPressed: () {},
+                  onPressed: onSummarize,
                   style: ElevatedButton.styleFrom(
                     backgroundColor: colorPrimary,
                     foregroundColor: colorOnPrimary,
@@ -743,7 +821,9 @@ class _DocumentsScreenState extends State<DocumentsScreen> {
         final double screenWidth = MediaQuery.of(context).size.width;
         if (screenWidth < _breakpointSmallPhone) {
           return FloatingActionButton(
-            onPressed: () {},
+            onPressed: () async {
+              await _addDocument();
+            },
             backgroundColor: colorPrimary,
             foregroundColor: colorOnPrimary,
             shape: RoundedRectangleBorder(
@@ -753,12 +833,14 @@ class _DocumentsScreenState extends State<DocumentsScreen> {
           );
         }
         return FloatingActionButton.extended(
-          onPressed: () {},
+          onPressed: () async {
+            await _addDocument();
+          },
           backgroundColor: colorPrimary,
           foregroundColor: colorOnPrimary,
           icon: const Icon(Icons.add),
           label: const Text(
-            'Upload New Document',
+            'Upload New File',
             style: TextStyle(fontWeight: FontWeight.w600),
           ),
           shape: RoundedRectangleBorder(

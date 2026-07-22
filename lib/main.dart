@@ -53,6 +53,12 @@ class NazariAIApp extends StatelessWidget {
         ),
       ),
       home: const SplashScreen(),
+      // routes: {
+      //   AppRoutes.home: (context) => const HomeScreen(),
+      //   AppRoutes.documents: (context) => const DocumentsScreen(),
+      //   AppRoutes.aiAssistant: (context) => const AiAssistantScreen(),
+      //   AppRoutes.studyTools: (context) => const StudyToolsScreen(),
+      // },
     );
   }
 }

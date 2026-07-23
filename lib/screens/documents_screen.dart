@@ -383,7 +383,7 @@ class _DocumentsScreenState extends State<DocumentsScreen> {
           Text(
             'All ${_allDocuments.length} documents are indexed and ready for offline querying.',
             style: TextStyle(
-              color: colorOnPrimary.withOpacity(0.9),
+              color: colorOnPrimary.withValues(alpha: 0.9),
               fontSize: 14,
             ),
           ),

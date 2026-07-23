@@ -15,8 +15,8 @@ class _HomeScreenState extends State<HomeScreen> with TickerProviderStateMixin {
   late AnimationController _floatController2;
   late AnimationController _floatController3;
 
-  double _parallaxX = 0;
-  double _parallaxY = 0;
+  final double _parallaxX = 0;
+  final double _parallaxY = 0;
 
   @override
   void initState() {
@@ -260,7 +260,9 @@ class _HomeScreenState extends State<HomeScreen> with TickerProviderStateMixin {
                       borderRadius: BorderRadius.circular(12),
                     ),
                     elevation: 8,
-                    shadowColor: const Color(0xFF0B5D3B).withOpacity(0.25),
+                    shadowColor: const Color(
+                      0xFF0B5D3B,
+                    ).withValues(alpha: 0.25),
                   ),
                   child: Row(
                     mainAxisAlignment: MainAxisAlignment.center,

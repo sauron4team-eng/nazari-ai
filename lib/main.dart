@@ -1,10 +1,13 @@
 import 'package:flutter/material.dart';
+import 'package:hive_flutter/hive_flutter.dart';
+import 'package:intl/intl.dart';
 import 'package:flutter/services.dart';
 import 'package:google_fonts/google_fonts.dart';
+import 'package:nazariai/ai_assistant_screen2.dart';
 import 'screens/splash_screen.dart';
 import 'screens/home_screen.dart';
 import 'screens/documents_screen.dart';
-import 'screens/ai_assistant_screen.dart';
+import 'screens/ai_assistant_screen.dart' hide ChatMessage;
 import 'screens/study_tools_screen.dart';
 
 void main() {
@@ -76,7 +79,7 @@ class _MainScreenState extends State<MainScreen> {
   List<Widget> get _screens => [
     const HomeScreen(),
     const DocumentsScreen(),
-    const AiAssistantScreen(),
+    const ChatScreen(),
     StudyToolsScreen(onNavigateToTab: _onItemTapped),
   ];
 

@@ -1,10 +1,13 @@
 import 'dart:io';
+import 'package:nazariai/utils/debug_print_data.dart';
+import 'package:nazariai/utils/debug_print_data.dart' as DatabaseService;
 import 'package:path/path.dart' as p;
 
 import 'package:file_picker/file_picker.dart';
 import 'package:flutter/material.dart';
 import 'package:nazariai/routes/route_names.dart';
 import 'package:nazariai/screens/ai_assistant_screen.dart';
+import 'package:nazariai/services/documents_service.dart';
 
 // ---------------------------------------------------------------------------
 // NazariAI - Documents Screen
@@ -43,20 +46,6 @@ const double _breakpointWide = 700; // bascule bento grid en 2 colonnes
 
 //-----FUNCTIONS---------------------------------------------
 
-String _getIcon(String extension) {
-  switch (extension) {
-    case 'pdf':
-      return 'picture_as_pdf';
-    case 'doc':
-    case 'docx':
-      return 'description';
-    case 'txt':
-      return 'article';
-    default:
-      return 'insert_drive_file';
-  }
-}
-
 //---------------navigate to page-----------------------
 
 // -------------------- Modèle de données simple (Map, pas de classe métier) -
@@ -77,47 +66,22 @@ class _DocumentsScreenState extends State<DocumentsScreen> {
   final List<Map<String, dynamic>> _selectedDocuments = [];
 
   Future<void> _addDocument() async {
-    try {
-      FilePickerResult? result = await FilePicker.pickFiles(
-        type: FileType.custom,
-        allowedExtensions: ['pdf', 'doc', 'docx', 'txt'],
-      );
+    final document = await DocumentsService.addDocument();
 
-      if (result == null || result.files.isEmpty) return;
+    if (document == null) return;
 
-      final file = result.files.first;
-      final path = file.path;
-      if (path == null) return;
+    final path = document['path'] as String?;
+    if (path == null) return;
 
-      final extension =
-          (file.extension ?? p.extension(path).replaceFirst('.', ''))
-              .toLowerCase();
-      final sizeMb = (file.size / (1024 * 1024)).toStringAsFixed(1);
-
-      final shortPath = path.length > 120
-          ? '...${path.substring(path.length - 120)}'
-          : path;
-      debugPrint('Chemin sélectionné (raccourci) : $shortPath');
-      debugPrint('Nom du fichier : ${file.name}');
-
-      if (_selectedDocuments.any((doc) => doc['path'] == path)) {
-        return;
-      }
-
-      setState(() {
-        _selectedDocuments.add({
-          'title': file.name,
-          'type': extension,
-          'size': file.size,
-          'meta': 'Added just now • $sizeMb MB',
-          'icon': _getIcon(extension),
-          'path': path,
-        });
-      });
-      print('Document ajouté : ${file.name}');
-    } catch (e) {
-      debugPrint('Erreur lors de l\'ajout du document : $e');
+    // Vérifier si le document existe déjà
+    if (_selectedDocuments.any((doc) => doc['path'] == path)) {
+      return;
     }
+
+    setState(() {
+      _selectedDocuments.add(document);
+    });
+    print('Document ajouté : ${document['title']}');
   }
 
   @override
@@ -564,9 +528,8 @@ class _DocumentsScreenState extends State<DocumentsScreen> {
                     Navigator.push(
                       context,
                       MaterialPageRoute(
-                        builder: (context) => AiAssistantScreen(
-                          initialFilePath: path,
-                        ),
+                        builder: (context) =>
+                            AiAssistantScreen(initialFilePath: path),
                       ),
                     );
                   }
@@ -581,9 +544,8 @@ class _DocumentsScreenState extends State<DocumentsScreen> {
                           Navigator.push(
                             context,
                             MaterialPageRoute(
-                              builder: (context) => AiAssistantScreen(
-                                initialFilePath: path,
-                              ),
+                              builder: (context) =>
+                                  AiAssistantScreen(initialFilePath: path),
                             ),
                           );
                         }
@@ -602,6 +564,8 @@ class _DocumentsScreenState extends State<DocumentsScreen> {
         return Icons.picture_as_pdf;
       case 'description':
         return Icons.description;
+      case 'article':
+        return Icons.article;
       case 'lab_profile':
         return Icons.biotech;
       default:
@@ -835,6 +799,7 @@ class _DocumentsScreenState extends State<DocumentsScreen> {
         return FloatingActionButton.extended(
           onPressed: () async {
             await _addDocument();
+            await DatabaseService.debugPrintAllData(); // Affiche le contenu de la base dans la console pour debug
           },
           backgroundColor: colorPrimary,
           foregroundColor: colorOnPrimary,

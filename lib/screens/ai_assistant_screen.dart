@@ -1,7 +1,7 @@
-import 'dart:convert';
 import 'dart:io';
 import 'package:path/path.dart' as p;
 import 'package:flutter/material.dart';
+import 'package:nazariai/services/documents_service.dart';
 
 /// ---------------------------------------------------------------
 /// NazariAI — écran de chat de l'assistant d'étude
@@ -59,7 +59,7 @@ class _AiAssistantScreenState extends State<AiAssistantScreen> {
   bool _isLoadingFile = false;
   String? _fileLoadError;
   String? _attachedFileContent;
-  List<String> _documentChunks = [];
+  List<DocumentChunk> _documentChunks = [];
 
   @override
   void initState() {
@@ -81,25 +81,28 @@ class _AiAssistantScreenState extends State<AiAssistantScreen> {
         throw Exception('Fichier introuvable : $path');
       }
 
-      final extension = p.extension(path).replaceFirst('.', '').toLowerCase();
-      final text = await _extractTextFromFile(file, extension);
-      if (text.trim().isEmpty) {
+      // Un seul appel à extractChunksFromFile (l'ancien code l'appelait
+      // deux fois, dont une fois sans "await", ce qui ne compilait pas)
+      final chunks = await DocumentsService.extractChunksFromFile(path);
+      if (chunks.isEmpty) {
         throw Exception('Le document ne contient pas de texte exploitable.');
       }
 
       final bytes = await file.length();
-      final chunks = _chunkDocumentText(text);
+      // Texte complet reconstitué à partir des chunks (chunk.text au lieu
+      // de chunk directement, puisque chunk est maintenant un DocumentChunk)
+      final fullText = chunks.map((c) => c.text).join('\n\n');
 
       setState(() {
         _attachedFilePath = path;
         _attachedFileName = p.basename(path);
         _attachedFileSize = bytes;
-        _attachedFileContent = text;
+        _attachedFileContent = fullText;
         _documentChunks = chunks;
       });
-      debugPrint('Fichier attaché : $_attachedFileName');
+      debugPrint('File attached : $_attachedFileName');
       _addAiMessage(
-        'Document "${_attachedFileName!}" chargé localement. Vous pouvez maintenant poser une question sur son contenu.',
+        'Document "${_attachedFileName!}" loaded locally. You can now ask questions about its content.',
         sources: [_attachedFileName!],
       );
     } catch (e) {
@@ -118,32 +121,6 @@ class _AiAssistantScreenState extends State<AiAssistantScreen> {
         });
       }
     }
-  }
-
-  Future<String> _extractTextFromFile(File file, String extension) async {
-    if (extension == 'txt') {
-      return await file.readAsString(encoding: utf8);
-    }
-
-    final bytes = await file.readAsBytes();
-    if (extension == 'pdf' || extension == 'doc' || extension == 'docx') {
-      // Extraction simple en UTF-8 comme fallback, car aucun parseur spécialisé
-      // n'est installé. Remplacer par un parseur réel si disponible.
-      return utf8.decode(bytes, allowMalformed: true);
-    }
-
-    return utf8.decode(bytes, allowMalformed: true);
-  }
-
-  List<String> _chunkDocumentText(String text) {
-    const maxChunkSize = 800;
-    final chunks = <String>[];
-    final normalized = text.replaceAll('\r\n', '\n').trim();
-    for (var start = 0; start < normalized.length; start += maxChunkSize) {
-      final end = (start + maxChunkSize).clamp(0, normalized.length);
-      chunks.add(normalized.substring(start, end));
-    }
-    return chunks;
   }
 
   void _addAiMessage(String text, {List<String>? sources}) {
@@ -193,23 +170,37 @@ class _AiAssistantScreenState extends State<AiAssistantScreen> {
 
   String _generateLocalResponse(String query) {
     if (_attachedFileContent == null || _attachedFileContent!.isEmpty) {
-      return 'Aucun document chargé. Cliquez sur un fichier dans l’écran Documents pour le charger et analyser son contenu.';
+      return 'No document loaded. Click on a file in the Documents screen to load and analyze its content.';
     }
 
     final queryLower = query.toLowerCase();
-    final matchingChunk = _documentChunks.firstWhere(
-      (chunk) => chunk.toLowerCase().contains(queryLower),
-      orElse: () => _documentChunks.isNotEmpty ? _documentChunks.first : '',
-    );
 
-    if (matchingChunk.isEmpty) {
-      return 'J’ai chargé "${_attachedFileName}", mais je n’ai pas trouvé d’extrait clair pour "$query". Pose une question plus précise ou vérifie le document.';
+    // firstWhere doit comparer chunk.text (String) et non le chunk lui-même
+    // (chunk est un DocumentChunk depuis la nouvelle API)
+    DocumentChunk? matchingChunk;
+    for (final chunk in _documentChunks) {
+      if (chunk.text.toLowerCase().contains(queryLower)) {
+        matchingChunk = chunk;
+        break;
+      }
+    }
+    matchingChunk ??= _documentChunks.isNotEmpty ? _documentChunks.first : null;
+
+    if (matchingChunk == null || matchingChunk.text.isEmpty) {
+      return 'I have loaded "$_attachedFileName", but I couldn\'t find a clear excerpt for "$query". Please ask a more specific question or check the document.';
     }
 
-    final excerpt = matchingChunk.length > 250
-        ? '${matchingChunk.substring(0, 250).trim()}...'
-        : matchingChunk.trim();
-    return 'Hi I am your AI assistant. The attached file is titled: "${_attachedFileName}". Please ask a more specific question about the document for a better answer.';
+    final excerpt = matchingChunk.text.length > 250
+        ? '${matchingChunk.text.substring(0, 250).trim()}...'
+        : matchingChunk.text.trim();
+
+    // Le numéro de page est maintenant disponible pour les PDF : on l'ajoute
+    // à la réponse quand il existe.
+    final pageInfo = matchingChunk.pageNumber != null
+        ? ' (page ${matchingChunk.pageNumber})'
+        : '';
+
+    return 'Hi I am your AI assistant. The attached file is titled: "$_attachedFileName"$pageInfo. Here is a relevant excerpt: "$excerpt" Please ask a more specific question about the document for a better answer.';
   }
 
   @override
@@ -303,64 +294,162 @@ class _AiAssistantScreenState extends State<AiAssistantScreen> {
       width: double.infinity,
       color: const Color(0xFFF5F5F5),
       padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
-      child: Row(
+      child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
-          Expanded(
-            child: Column(
-              crossAxisAlignment: CrossAxisAlignment.start,
-              children: [
-                if (_isLoadingFile)
-                  const Text(
-                    'Chargement du document...',
-                    style: TextStyle(fontSize: 14, fontWeight: FontWeight.w600),
-                  )
-                else if (_fileLoadError != null)
-                  const Text(
-                    'Erreur de chargement du document',
-                    style: TextStyle(
-                      fontSize: 14,
-                      fontWeight: FontWeight.w600,
-                      color: Colors.red,
+          Row(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Expanded(
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    if (_isLoadingFile)
+                      const Text(
+                        'Loading document...',
+                        style: TextStyle(
+                          fontSize: 14,
+                          fontWeight: FontWeight.w600,
+                        ),
+                      )
+                    else if (_fileLoadError != null)
+                      const Text(
+                        'Error loading document',
+                        style: TextStyle(
+                          fontSize: 14,
+                          fontWeight: FontWeight.w600,
+                          color: Colors.red,
+                        ),
+                      )
+                    else
+                      Text(
+                        'Document loaded : ${_attachedFileName ?? 'No document'}',
+                        style: const TextStyle(
+                          fontSize: 14,
+                          fontWeight: FontWeight.w600,
+                        ),
+                      ),
+                    const SizedBox(height: 4),
+                    Text(
+                      _isLoadingFile
+                          ? 'Please wait...'
+                          : _fileLoadError ??
+                                _attachedFilePath ??
+                                'No document attached',
+                      maxLines: 2,
+                      overflow: TextOverflow.ellipsis,
+                      style: TextStyle(
+                        fontSize: 12,
+                        color: _fileLoadError != null
+                            ? Colors.red
+                            : NazariColors.grayMid,
+                      ),
                     ),
-                  )
-                else
-                  Text(
-                    'Document chargé : ${_attachedFileName ?? 'Aucun document'}',
+                  ],
+                ),
+              ),
+              if (!_isLoadingFile && _attachedFileSize != null)
+                Padding(
+                  padding: const EdgeInsets.only(left: 12),
+                  child: Text(
+                    '${(_attachedFileSize! / 1024).toStringAsFixed(1)} KB',
                     style: const TextStyle(
-                      fontSize: 14,
-                      fontWeight: FontWeight.w600,
+                      fontSize: 12,
+                      color: NazariColors.grayMid,
                     ),
                   ),
-                const SizedBox(height: 4),
-                Text(
-                  _isLoadingFile
-                      ? 'Veuillez patienter...'
-                      : _fileLoadError ??
-                            _attachedFilePath ??
-                            'Aucun document attaché',
-                  maxLines: 2,
-                  overflow: TextOverflow.ellipsis,
-                  style: TextStyle(
-                    fontSize: 12,
-                    color: _fileLoadError != null
-                        ? Colors.red
-                        : NazariColors.grayMid,
+                ),
+            ],
+          ),
+          // Affichage de tous les chunks
+          if (_documentChunks.isNotEmpty && !_isLoadingFile)
+            Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                const SizedBox(height: 12),
+                const Divider(height: 1, color: Color(0xFFE0E0E0)),
+                const SizedBox(height: 12),
+                Row(
+                  mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                  children: [
+                    const Text(
+                      'Contenu du document :',
+                      style: TextStyle(
+                        fontSize: 12,
+                        fontWeight: FontWeight.w600,
+                        color: NazariColors.grayMid,
+                      ),
+                    ),
+                    Text(
+                      '${_documentChunks.length} chunks',
+                      style: const TextStyle(
+                        fontSize: 11,
+                        color: NazariColors.grayLight,
+                      ),
+                    ),
+                  ],
+                ),
+                const SizedBox(height: 8),
+                Container(
+                  constraints: const BoxConstraints(maxHeight: 200),
+                  decoration: BoxDecoration(
+                    color: Colors.white,
+                    borderRadius: BorderRadius.circular(8),
+                    border: Border.all(color: const Color(0xFFE0E0E0)),
+                  ),
+                  child: SingleChildScrollView(
+                    child: Column(
+                      children: _documentChunks.asMap().entries.map((entry) {
+                        final index = entry.key;
+                        final chunk = entry.value;
+                        // chunk.text au lieu de chunk (String) directement
+                        final preview = chunk.text.length > 150
+                            ? '${chunk.text.substring(0, 150).trim()}...'
+                            : chunk.text.trim();
+                        // Label enrichi avec le numéro de page si disponible
+                        // (uniquement pour les PDF)
+                        final label = chunk.pageNumber != null
+                            ? 'Chunk ${index + 1}/${_documentChunks.length} • Page ${chunk.pageNumber}'
+                            : 'Chunk ${index + 1}/${_documentChunks.length}';
+                        return Column(
+                          children: [
+                            if (index > 0)
+                              const Divider(
+                                height: 1,
+                                color: Color(0xFFF0F0F0),
+                              ),
+                            Padding(
+                              padding: const EdgeInsets.all(10),
+                              child: Column(
+                                crossAxisAlignment: CrossAxisAlignment.start,
+                                children: [
+                                  Text(
+                                    label,
+                                    style: const TextStyle(
+                                      fontSize: 10,
+                                      fontWeight: FontWeight.w600,
+                                      color: NazariColors.grayLight,
+                                    ),
+                                  ),
+                                  const SizedBox(height: 4),
+                                  Text(
+                                    preview,
+                                    style: const TextStyle(
+                                      fontSize: 11,
+                                      color: NazariColors.grayMid,
+                                      height: 1.3,
+                                    ),
+                                  ),
+                                ],
+                              ),
+                            ),
+                          ],
+                        );
+                      }).toList(),
+                    ),
                   ),
                 ),
               ],
-            ),
-          ),
-          if (!_isLoadingFile && _attachedFileSize != null)
-            Padding(
-              padding: const EdgeInsets.only(left: 12),
-              child: Text(
-                '${(_attachedFileSize! / 1024).toStringAsFixed(1)} KB',
-                style: const TextStyle(
-                  fontSize: 12,
-                  color: NazariColors.grayMid,
-                ),
-              ),
             ),
         ],
       ),

@@ -33,6 +33,12 @@ dependencies:
   cupertino_icons: ^1.0.8
   google_fonts: ^6.2.1
   file_picker: ^11.0.2
+  archive: ^3.6.0
+  shared_preferences: ^2.2.0
+  path: ^1.9.1
+  syncfusion_flutter_pdf: ^34.1.32
+  sqflite: ^2.3.0
+  crypto: ^3.0.3
 
 dev_dependencies:
   flutter_test:

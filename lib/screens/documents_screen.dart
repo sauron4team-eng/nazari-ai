@@ -5,9 +5,15 @@ import 'package:path/path.dart' as p;
 
 import 'package:file_picker/file_picker.dart';
 import 'package:flutter/material.dart';
+import 'package:hive_flutter/hive_flutter.dart';
 import 'package:nazariai/routes/route_names.dart';
 import 'package:nazariai/screens/ai_assistant_screen.dart';
 import 'package:nazariai/services/documents_service.dart';
+
+// Nom de la Hive box utilisée pour persister les documents uploadés,
+// afin qu'ils restent disponibles après fermeture/réouverture de l'app.
+const String _documentsBoxName = 'documents_box';
+const String _documentsKey = 'items';
 
 // ---------------------------------------------------------------------------
 // NazariAI - Documents Screen
@@ -65,6 +71,10 @@ class _DocumentsScreenState extends State<DocumentsScreen> {
   String _selectedFilter = 'All'; // 'All' | 'PDFs' | 'Documents'
   final List<Map<String, dynamic>> _selectedDocuments = [];
 
+  // Box Hive contenant les documents uploadés (persistée sur disque).
+  Box? _documentsBox;
+  bool _isLoadingDocuments = true;
+
   Future<void> _addDocument() async {
     final document = await DocumentsService.addDocument();
 
@@ -81,7 +91,47 @@ class _DocumentsScreenState extends State<DocumentsScreen> {
     setState(() {
       _selectedDocuments.add(document);
     });
+    await _persistDocuments();
     print('Document ajouté : ${document['title']}');
+  }
+
+  Future<void> _removeDocument(String path) async {
+    setState(() {
+      _selectedDocuments.removeWhere((doc) => doc['path'] == path);
+    });
+    await _persistDocuments();
+  }
+
+  // Ouvre (ou récupère) la Hive box et recharge les documents précédemment
+  // sauvegardés, s'il y en a.
+  Future<void> _initDocumentsBox() async {
+    final box = await Hive.openBox(_documentsBoxName);
+    final stored = box.get(_documentsKey) as List?;
+
+    final restored = <Map<String, dynamic>>[];
+    if (stored != null) {
+      for (final item in stored) {
+        if (item is Map) {
+          restored.add(Map<String, dynamic>.from(item));
+        }
+      }
+    }
+
+    if (!mounted) return;
+    setState(() {
+      _documentsBox = box;
+      _selectedDocuments
+        ..clear()
+        ..addAll(restored);
+      _isLoadingDocuments = false;
+    });
+  }
+
+  // Sauvegarde la liste courante des documents dans Hive.
+  Future<void> _persistDocuments() async {
+    final box = _documentsBox;
+    if (box == null) return;
+    await box.put(_documentsKey, _selectedDocuments);
   }
 
   @override
@@ -92,6 +142,7 @@ class _DocumentsScreenState extends State<DocumentsScreen> {
         _query = _searchController.text.toLowerCase();
       });
     });
+    _initDocumentsBox();
   }
 
   @override
@@ -528,7 +579,8 @@ class _DocumentsScreenState extends State<DocumentsScreen> {
                     Navigator.push(
                       context,
                       MaterialPageRoute(
-                        builder: (context) => AiAssistantScreen(),
+                        builder: (context) =>
+                            AiAssistantScreen(initialFilePath: path),
                       ),
                     );
                   }
@@ -543,10 +595,14 @@ class _DocumentsScreenState extends State<DocumentsScreen> {
                           Navigator.push(
                             context,
                             MaterialPageRoute(
-                              builder: (context) => AiAssistantScreen(),
+                              builder: (context) =>
+                                  AiAssistantScreen(initialFilePath: path),
                             ),
                           );
                         }
+                      : null,
+                  onDelete: path != null && path.isNotEmpty
+                      ? () => _removeDocument(path)
                       : null,
                 ),
               );
@@ -597,6 +653,7 @@ class _DocumentsScreenState extends State<DocumentsScreen> {
     required String iconName,
     required String type,
     VoidCallback? onSummarize,
+    VoidCallback? onDelete,
   }) {
     return Container(
       width: double.infinity,
@@ -656,10 +713,18 @@ class _DocumentsScreenState extends State<DocumentsScreen> {
                 ),
               ),
               const SizedBox(width: 8),
-              const Icon(
-                Icons.more_vert,
-                color: colorOnSurfaceVariant,
-                size: 20,
+              PopupMenuButton<String>(
+                icon: const Icon(
+                  Icons.delete_outline,
+                  color: colorOnSurfaceVariant,
+                  size: 20,
+                ),
+                onSelected: (value) {
+                  if (value == 'delete') onDelete?.call();
+                },
+                itemBuilder: (context) => [
+                  const PopupMenuItem(value: 'delete', child: Text('Remove')),
+                ],
               ),
             ],
           ),
@@ -796,8 +861,7 @@ class _DocumentsScreenState extends State<DocumentsScreen> {
         }
         return FloatingActionButton.extended(
           onPressed: () async {
-            await _addDocument();
-            await DatabaseService.debugPrintAllData(); // Affiche le contenu de la base dans la console pour debug
+            await _addDocument(); // Affiche le contenu de la base dans la console pour debug
           },
           backgroundColor: colorPrimary,
           foregroundColor: colorOnPrimary,

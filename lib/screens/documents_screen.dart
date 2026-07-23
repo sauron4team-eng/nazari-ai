@@ -528,8 +528,7 @@ class _DocumentsScreenState extends State<DocumentsScreen> {
                     Navigator.push(
                       context,
                       MaterialPageRoute(
-                        builder: (context) =>
-                            AiAssistantScreen(initialFilePath: path),
+                        builder: (context) => AiAssistantScreen(),
                       ),
                     );
                   }
@@ -544,8 +543,7 @@ class _DocumentsScreenState extends State<DocumentsScreen> {
                           Navigator.push(
                             context,
                             MaterialPageRoute(
-                              builder: (context) =>
-                                  AiAssistantScreen(initialFilePath: path),
+                              builder: (context) => AiAssistantScreen(),
                             ),
                           );
                         }

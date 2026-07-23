@@ -39,6 +39,7 @@ dependencies:
   syncfusion_flutter_pdf: ^34.1.32
   sqflite: ^2.3.0
   crypto: ^3.0.3
+  hive_flutter: ^1.1.0
 
 dev_dependencies:
   flutter_test:

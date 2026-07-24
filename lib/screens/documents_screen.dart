@@ -759,7 +759,7 @@ class _DocumentsScreenState extends State<DocumentsScreen> {
                     ),
                   ),
                   child: const Text(
-                    'Summarize',
+                    'Move to chat',
                     style: TextStyle(fontSize: 12, fontWeight: FontWeight.w600),
                   ),
                 ),

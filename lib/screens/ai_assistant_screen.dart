@@ -1,4 +1,7 @@
 import 'dart:io';
+import 'package:flutter_gemma/core/api/flutter_gemma.dart';
+import 'package:nazariai/ai-services/gemma_service.dart' as gemma;
+import 'package:nazariai/widgets/chat_action_menu.dart';
 import 'package:path/path.dart' as p;
 import 'package:flutter/material.dart';
 import 'package:nazariai/services/documents_service.dart';
@@ -60,12 +63,55 @@ class _AiAssistantScreenState extends State<AiAssistantScreen> {
   String? _fileLoadError;
   String? _attachedFileContent;
   List<DocumentChunk> _documentChunks = [];
+  bool _isModelReady = false;
+  String _modelStatus = 'Initialisation du modèle IA...';
+  int _downloadProgress = 0;
+  final LayerLink _plusButtonLink = LayerLink();
+  OverlayEntry? _actionMenuOverlay;
 
   @override
   void initState() {
     super.initState();
+    _initGemma();
     if (widget.initialFilePath != null) {
       _attachFile(widget.initialFilePath!);
+    }
+  }
+
+  Future<void> _initGemma() async {
+    try {
+      await gemma.setupGemmaModel(
+        onProgress: (p) {
+          if (mounted) {
+            setState(() {
+              _modelStatus = 'Téléchargement du modèle... $p%';
+              _downloadProgress = p;
+            });
+          }
+        },
+      );
+
+      if (mounted) setState(() => _modelStatus = 'Chargement du modèle...');
+      //Verifier la presence du fichier avant de lancer la session de chat
+      debugPrint('Modèle actif ? ${FlutterGemma.hasActiveModel()}');
+
+      await gemma.startChatSession(); // pas encore de document à ce stade
+
+      if (mounted) {
+        setState(() {
+          _isModelReady = true;
+          _modelStatus = 'Prêt';
+        });
+        debugPrint('Etat pret');
+      }
+    } catch (e, stack) {
+      debugPrint('❌ Erreur init Gemma : $e');
+      debugPrint('Stack : $stack');
+      if (mounted) {
+        setState(() {
+          _modelStatus = 'Erreur : $e';
+        });
+      }
     }
   }
 
@@ -100,6 +146,15 @@ class _AiAssistantScreenState extends State<AiAssistantScreen> {
         _attachedFileContent = fullText;
         _documentChunks = chunks;
       });
+      // Attendre que le modèle soit prêt avant de démarrer une session avec contexte
+      if (!_isModelReady) {
+        await Future.doWhile(() async {
+          await Future.delayed(const Duration(milliseconds: 200));
+          return !_isModelReady;
+        });
+      }
+
+      await gemma.startChatSession(documentContext: fullText);
       debugPrint('File attached : $_attachedFileName');
       _addAiMessage(
         'Document "${_attachedFileName!}" loaded locally. You can now ask questions about its content.',
@@ -134,21 +189,97 @@ class _AiAssistantScreenState extends State<AiAssistantScreen> {
         ),
       );
     });
+    _scrollToBottom();
+  }
 
-    Future.delayed(const Duration(milliseconds: 100), () {
+  void _scrollToBottom() {
+    Future.delayed(const Duration(milliseconds: 50), () {
       if (_scrollController.hasClients) {
         _scrollController.animateTo(
           _scrollController.position.maxScrollExtent,
-          duration: const Duration(milliseconds: 250),
+          duration: const Duration(milliseconds: 200),
           curve: Curves.easeOut,
         );
       }
     });
   }
 
-  void _handleSend() {
+  //Action on "+" AIChat icon
+  void _toggleActionMenu() {
+    try {
+      if (_actionMenuOverlay != null) {
+        _closeActionMenu();
+        print('Toggle Action clique ok');
+      } else {
+        _openActionMenu();
+        print('Toggle Action clique mais erreur');
+      }
+    } catch (e) {
+      print("Error toggleActionMenu: $e");
+    }
+  }
+
+  void _openActionMenu() {
+    final overlay = Overlay.of(context);
+    _actionMenuOverlay = OverlayEntry(
+      builder: (context) => Stack(
+        children: [
+          // Zone invisible qui capte les taps en dehors du menu pour le fermer
+          Positioned.fill(
+            child: GestureDetector(
+              behavior: HitTestBehavior.translucent,
+              onTap: _closeActionMenu,
+              child: Container(color: Colors.transparent),
+            ),
+          ),
+          CompositedTransformFollower(
+            link: _plusButtonLink,
+            showWhenUnlinked: false,
+            targetAnchor: Alignment.topLeft,
+            followerAnchor: Alignment.bottomLeft,
+            offset: const Offset(0, -8),
+            child: ChatActionMenu(
+              onSummarize: () {
+                _closeActionMenu();
+                _handleSummarize();
+              },
+              onGenerateQuiz: () {
+                _closeActionMenu();
+                _handleGenerateQuiz();
+              },
+              onGenerateFlashcards: () {
+                _closeActionMenu();
+                _handleGenerateFlashcards();
+              },
+            ),
+          ),
+        ],
+      ),
+    );
+    overlay.insert(_actionMenuOverlay!);
+  }
+
+  void _closeActionMenu() {
+    _actionMenuOverlay?.remove();
+    _actionMenuOverlay = null;
+  }
+
+  @override
+  void dispose() {
+    _closeActionMenu();
+    super.dispose();
+  }
+
+  Future<void> _handleSend() async {
     final text = _controller.text.trim();
     if (text.isEmpty) return;
+
+    if (!_isModelReady) {
+      _addAiMessage(
+        'Le modèle IA n\'est pas encore prêt, patiente quelques secondes.',
+      );
+      return;
+    }
 
     setState(() {
       _messages.add(
@@ -161,46 +292,132 @@ class _AiAssistantScreenState extends State<AiAssistantScreen> {
     });
     _controller.clear();
 
-    final response = _generateLocalResponse(text);
-    _addAiMessage(
-      response,
-      sources: _attachedFileName != null ? [_attachedFileName!] : null,
-    );
+    // Message IA placeholder, qu'on va mettre à jour au fil du streaming
+    final aiMessageIndex = _messages.length;
+    setState(() {
+      _messages.add(
+        ChatMessage(
+          author: MessageAuthor.ai,
+          text: '',
+          sources: _attachedFileName != null ? [_attachedFileName!] : null,
+          time: DateTime.now(),
+        ),
+      );
+    });
+
+    try {
+      await for (final partial in gemma.sendChatMessage(text)) {
+        setState(() {
+          _messages[aiMessageIndex] = ChatMessage(
+            author: MessageAuthor.ai,
+            text: partial,
+            sources: _messages[aiMessageIndex].sources,
+            time: _messages[aiMessageIndex].time,
+          );
+        });
+        _scrollToBottom();
+      }
+    } catch (e) {
+      setState(() {
+        _messages[aiMessageIndex] = ChatMessage(
+          author: MessageAuthor.ai,
+          text: 'Erreur pendant la génération de la réponse : $e',
+          time: _messages[aiMessageIndex].time,
+        );
+      });
+    }
   }
 
-  String _generateLocalResponse(String query) {
+  //Methods to manage menu under "+" on the AIChat
+  Future<void> _handleSummarize() async {
     if (_attachedFileContent == null || _attachedFileContent!.isEmpty) {
-      return 'No document loaded. Click on a file in the Documents screen to load and analyze its content.';
+      _addAiMessage(
+        'Aucun document chargé à résumer. Attache d\'abord un document.',
+      );
+      return;
+    }
+    if (!_isModelReady) {
+      _addAiMessage(
+        'Le modèle IA n\'est pas encore prêt, patiente quelques secondes.',
+      );
+      return;
     }
 
-    final queryLower = query.toLowerCase();
+    setState(() {
+      _messages.add(
+        ChatMessage(
+          author: MessageAuthor.user,
+          text: 'Summarize this document.',
+          time: DateTime.now(),
+        ),
+      );
+    });
+    _scrollToBottom();
 
-    // firstWhere doit comparer chunk.text (String) et non le chunk lui-même
-    // (chunk est un DocumentChunk depuis la nouvelle API)
-    DocumentChunk? matchingChunk;
-    for (final chunk in _documentChunks) {
-      if (chunk.text.toLowerCase().contains(queryLower)) {
-        matchingChunk = chunk;
-        break;
+    try {
+      final summary = await gemma.summarizeDocument(_attachedFileContent!);
+      _addAiMessage(
+        summary,
+        sources: _attachedFileName != null ? [_attachedFileName!] : null,
+      );
+    } catch (e) {
+      _addAiMessage('Erreur pendant la génération du résumé : $e');
+    }
+  }
+
+  Future<void> _handleGenerateFlashcards() async {
+    if (_attachedFileContent == null || _attachedFileContent!.isEmpty) {
+      _addAiMessage('Aucun document chargé pour générer des flashcards.');
+      return;
+    }
+    if (!_isModelReady) {
+      _addAiMessage(
+        'Le modèle IA n\'est pas encore prêt, patiente quelques secondes.',
+      );
+      return;
+    }
+
+    setState(() {
+      _messages.add(
+        ChatMessage(
+          author: MessageAuthor.user,
+          text: 'Generate flashcards from this document.',
+          time: DateTime.now(),
+        ),
+      );
+    });
+    _scrollToBottom();
+
+    try {
+      final cards = await gemma.generateFlashcards(
+        _attachedFileContent!,
+        count: 10,
+      );
+      if (cards.isEmpty) {
+        _addAiMessage('Je n\'ai pas réussi à générer de flashcards, réessaie.');
+        return;
       }
+      final formatted = cards
+          .asMap()
+          .entries
+          .map(
+            (e) =>
+                'Q${e.key + 1}: ${e.value['question']}\nA${e.key + 1}: ${e.value['answer']}',
+          )
+          .join('\n\n');
+      _addAiMessage(
+        formatted,
+        sources: _attachedFileName != null ? [_attachedFileName!] : null,
+      );
+    } catch (e) {
+      _addAiMessage('Erreur pendant la génération des flashcards : $e');
     }
-    matchingChunk ??= _documentChunks.isNotEmpty ? _documentChunks.first : null;
+  }
 
-    if (matchingChunk == null || matchingChunk.text.isEmpty) {
-      return 'I have loaded "$_attachedFileName", but I couldn\'t find a clear excerpt for "$query". Please ask a more specific question or check the document.';
-    }
-
-    final excerpt = matchingChunk.text.length > 250
-        ? '${matchingChunk.text.substring(0, 250).trim()}...'
-        : matchingChunk.text.trim();
-
-    // Le numéro de page est maintenant disponible pour les PDF : on l'ajoute
-    // à la réponse quand il existe.
-    final pageInfo = matchingChunk.pageNumber != null
-        ? ' (page ${matchingChunk.pageNumber})'
-        : '';
-
-    return 'Hi I am your AI assistant. The attached file is titled: "$_attachedFileName"$pageInfo. Here is a relevant excerpt: "$excerpt" Please ask a more specific question about the document for a better answer.';
+  Future<void> _handleGenerateQuiz() async {
+    _addAiMessage(
+      'La génération de quiz arrive bientôt — pas encore implémentée.',
+    );
   }
 
   @override
@@ -255,17 +472,18 @@ class _AiAssistantScreenState extends State<AiAssistantScreen> {
         child: Row(
           children: [
             IconButton(
-              icon: const Icon(Icons.attach_file, size: 20),
+              icon: const Icon(Icons.add, size: 20),
               color: NazariColors.black,
               onPressed: () {
-                // TODO: ouvrir le sélecteur de document
+                _toggleActionMenu();
+                setState(() {});
               },
             ),
             Expanded(
               child: TextField(
                 controller: _controller,
                 decoration: const InputDecoration(
-                  hintText: 'Ask about your study',
+                  hintText: 'Ask anything about your study',
                   hintStyle: TextStyle(color: NazariColors.grayLight),
                   border: InputBorder.none,
                 ),
@@ -361,96 +579,6 @@ class _AiAssistantScreenState extends State<AiAssistantScreen> {
                 ),
             ],
           ),
-          // Affichage de tous les chunks
-          if (_documentChunks.isNotEmpty && !_isLoadingFile)
-            Column(
-              crossAxisAlignment: CrossAxisAlignment.start,
-              children: [
-                const SizedBox(height: 12),
-                const Divider(height: 1, color: Color(0xFFE0E0E0)),
-                const SizedBox(height: 12),
-                Row(
-                  mainAxisAlignment: MainAxisAlignment.spaceBetween,
-                  children: [
-                    const Text(
-                      'Contenu du document :',
-                      style: TextStyle(
-                        fontSize: 12,
-                        fontWeight: FontWeight.w600,
-                        color: NazariColors.grayMid,
-                      ),
-                    ),
-                    Text(
-                      '${_documentChunks.length} chunks',
-                      style: const TextStyle(
-                        fontSize: 11,
-                        color: NazariColors.grayLight,
-                      ),
-                    ),
-                  ],
-                ),
-                const SizedBox(height: 8),
-                Container(
-                  constraints: const BoxConstraints(maxHeight: 200),
-                  decoration: BoxDecoration(
-                    color: Colors.white,
-                    borderRadius: BorderRadius.circular(8),
-                    border: Border.all(color: const Color(0xFFE0E0E0)),
-                  ),
-                  child: SingleChildScrollView(
-                    child: Column(
-                      children: _documentChunks.asMap().entries.map((entry) {
-                        final index = entry.key;
-                        final chunk = entry.value;
-                        // chunk.text au lieu de chunk (String) directement
-                        final preview = chunk.text.length > 150
-                            ? '${chunk.text.substring(0, 150).trim()}...'
-                            : chunk.text.trim();
-                        // Label enrichi avec le numéro de page si disponible
-                        // (uniquement pour les PDF)
-                        final label = chunk.pageNumber != null
-                            ? 'Chunk ${index + 1}/${_documentChunks.length} • Page ${chunk.pageNumber}'
-                            : 'Chunk ${index + 1}/${_documentChunks.length}';
-                        return Column(
-                          children: [
-                            if (index > 0)
-                              const Divider(
-                                height: 1,
-                                color: Color(0xFFF0F0F0),
-                              ),
-                            Padding(
-                              padding: const EdgeInsets.all(10),
-                              child: Column(
-                                crossAxisAlignment: CrossAxisAlignment.start,
-                                children: [
-                                  Text(
-                                    label,
-                                    style: const TextStyle(
-                                      fontSize: 10,
-                                      fontWeight: FontWeight.w600,
-                                      color: NazariColors.grayLight,
-                                    ),
-                                  ),
-                                  const SizedBox(height: 4),
-                                  Text(
-                                    preview,
-                                    style: const TextStyle(
-                                      fontSize: 11,
-                                      color: NazariColors.grayMid,
-                                      height: 1.3,
-                                    ),
-                                  ),
-                                ],
-                              ),
-                            ),
-                          ],
-                        );
-                      }).toList(),
-                    ),
-                  ),
-                ),
-              ],
-            ),
         ],
       ),
     );

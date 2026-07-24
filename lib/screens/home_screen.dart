@@ -1,6 +1,8 @@
 import 'dart:math' show pi, sin;
 import 'package:flutter/material.dart';
 import 'package:google_fonts/google_fonts.dart';
+import 'package:nazariai/ai-services/gemma_service.dart' as gemma;
+import 'package:nazariai/screens/ai_assistant_screen.dart';
 
 class HomeScreen extends StatefulWidget {
   const HomeScreen({super.key});
@@ -18,9 +20,17 @@ class _HomeScreenState extends State<HomeScreen> with TickerProviderStateMixin {
   double _parallaxX = 0;
   double _parallaxY = 0;
 
+  // ── État Gemma ──
+  gemma.GemmaReadiness? _readiness;
+  bool _isProcessing = false;
+  int _downloadProgress = 0;
+  String? _statusMessage;
+
   @override
   void initState() {
     super.initState();
+
+    _checkReadiness();
 
     _staggerController = AnimationController(
       vsync: this,
@@ -55,6 +65,95 @@ class _HomeScreenState extends State<HomeScreen> with TickerProviderStateMixin {
     _floatController3.dispose();
     super.dispose();
   }
+
+  // ═══════════════════════════════════════════════════════════
+  //  LOGIQUE GEMMA
+  // ═══════════════════════════════════════════════════════════
+
+  /// Vérifie l'état du modèle au démarrage, sans rien déclencher.
+  Future<void> _checkReadiness() async {
+    final readiness = await gemma.checkGemmaReadiness();
+    if (mounted) {
+      setState(() => _readiness = readiness);
+    }
+  }
+
+  /// Appelé au tap sur le bouton principal.
+  Future<void> _handleGetStarted() async {
+    // Modèle déjà actif → on va directement au chat, sans délai.
+    if (_readiness == gemma.GemmaReadiness.ready) {
+      _goToChat();
+      return;
+    }
+
+    setState(() {
+      _isProcessing = true;
+      _statusMessage = _readiness == gemma.GemmaReadiness.sharedFileAvailable
+          ? 'Installation du modèle depuis le fichier local...'
+          : 'Téléchargement du modèle IA (2,4 Go)...';
+    });
+
+    try {
+      await gemma.setupGemmaModel(
+        onProgress: (p) {
+          if (mounted) {
+            setState(() {
+              _downloadProgress = p;
+              _statusMessage = 'Téléchargement du modèle IA... $p%';
+            });
+          }
+        },
+      );
+
+      if (mounted) {
+        setState(() {
+          _statusMessage =
+              'Préparation du modèle (peut prendre quelques minutes au premier lancement)...';
+        });
+      }
+
+      await gemma.startChatSession();
+
+      if (mounted) {
+        setState(() {
+          _isProcessing = false;
+          _readiness = gemma.GemmaReadiness.ready;
+          _statusMessage = null;
+        });
+        _goToChat();
+      }
+    } catch (e) {
+      if (mounted) {
+        setState(() {
+          _isProcessing = false;
+          _statusMessage = 'Erreur : $e';
+        });
+      }
+    }
+  }
+
+  void _goToChat() {
+    Navigator.of(
+      context,
+    ).push(MaterialPageRoute(builder: (_) => const AiAssistantScreen()));
+  }
+
+  String _buttonLabel() {
+    switch (_readiness) {
+      case gemma.GemmaReadiness.ready:
+        return 'Get Started';
+      case gemma.GemmaReadiness.sharedFileAvailable:
+        return 'Install AI Model';
+      case gemma.GemmaReadiness.needsDownload:
+        return 'Download AI Model (2.4GB)';
+      default:
+        return 'Get Started';
+    }
+  }
+
+  // ═══════════════════════════════════════════════════════════
+  //  ANIMATIONS
+  // ═══════════════════════════════════════════════════════════
 
   Widget _buildStaggeredItem(Widget child, double delay) {
     final slideAnimation =
@@ -251,7 +350,7 @@ class _HomeScreenState extends State<HomeScreen> with TickerProviderStateMixin {
               SizedBox(
                 width: double.infinity,
                 child: ElevatedButton(
-                  onPressed: () {},
+                  onPressed: _isProcessing ? null : _handleGetStarted,
                   style: ElevatedButton.styleFrom(
                     backgroundColor: const Color(0xFF0B5D3B),
                     foregroundColor: Colors.white,
@@ -262,24 +361,62 @@ class _HomeScreenState extends State<HomeScreen> with TickerProviderStateMixin {
                     elevation: 8,
                     shadowColor: const Color(0xFF0B5D3B).withOpacity(0.25),
                   ),
-                  child: Row(
-                    mainAxisAlignment: MainAxisAlignment.center,
-                    children: [
-                      Text(
-                        'Get Started',
-                        style: GoogleFonts.hankenGrotesk(
-                          fontSize: 16,
-                          fontWeight: FontWeight.w600,
-                          color: Colors.white,
-                          height: 1.4,
+                  child: _isProcessing
+                      ? Row(
+                          mainAxisAlignment: MainAxisAlignment.center,
+                          children: [
+                            const SizedBox(
+                              width: 18,
+                              height: 18,
+                              child: CircularProgressIndicator(
+                                strokeWidth: 2,
+                                valueColor: AlwaysStoppedAnimation(
+                                  Colors.white,
+                                ),
+                              ),
+                            ),
+                            const SizedBox(width: 12),
+                            Text(
+                              _downloadProgress > 0
+                                  ? '$_downloadProgress%'
+                                  : 'Please wait...',
+                              style: GoogleFonts.hankenGrotesk(
+                                fontSize: 16,
+                                fontWeight: FontWeight.w600,
+                                color: Colors.white,
+                              ),
+                            ),
+                          ],
+                        )
+                      : Row(
+                          mainAxisAlignment: MainAxisAlignment.center,
+                          children: [
+                            Text(
+                              _buttonLabel(),
+                              style: GoogleFonts.hankenGrotesk(
+                                fontSize: 16,
+                                fontWeight: FontWeight.w600,
+                                color: Colors.white,
+                                height: 1.4,
+                              ),
+                            ),
+                            const SizedBox(width: 8),
+                            const Icon(Icons.arrow_forward, size: 20),
+                          ],
                         ),
-                      ),
-                      const SizedBox(width: 8),
-                      const Icon(Icons.arrow_forward, size: 20),
-                    ],
-                  ),
                 ),
               ),
+              if (_statusMessage != null) ...[
+                const SizedBox(height: 12),
+                Text(
+                  _statusMessage!,
+                  textAlign: TextAlign.center,
+                  style: GoogleFonts.hankenGrotesk(
+                    fontSize: 13,
+                    color: const Color(0xFF6B7280),
+                  ),
+                ),
+              ],
               const SizedBox(height: 12),
               SizedBox(
                 width: double.infinity,
@@ -385,74 +522,116 @@ class _HomeScreenState extends State<HomeScreen> with TickerProviderStateMixin {
               ),
               const SizedBox(height: 24),
               _buildStaggeredItem(
-                Row(
+                Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
                   children: [
-                    ElevatedButton(
-                      onPressed: () {},
-                      style: ElevatedButton.styleFrom(
-                        backgroundColor: const Color(0xFF0B5D3B),
-                        foregroundColor: Colors.white,
-                        padding: const EdgeInsets.symmetric(
-                          horizontal: 32,
-                          vertical: 16,
+                    Row(
+                      children: [
+                        ElevatedButton(
+                          onPressed: _isProcessing ? null : _handleGetStarted,
+                          style: ElevatedButton.styleFrom(
+                            backgroundColor: const Color(0xFF0B5D3B),
+                            foregroundColor: Colors.white,
+                            padding: const EdgeInsets.symmetric(
+                              horizontal: 32,
+                              vertical: 16,
+                            ),
+                            shape: RoundedRectangleBorder(
+                              borderRadius: BorderRadius.circular(12),
+                            ),
+                            elevation: 8,
+                            shadowColor: const Color(
+                              0xFF0B5D3B,
+                            ).withValues(alpha: 0.25),
+                          ),
+                          child: _isProcessing
+                              ? Row(
+                                  mainAxisSize: MainAxisSize.min,
+                                  children: [
+                                    const SizedBox(
+                                      width: 18,
+                                      height: 18,
+                                      child: CircularProgressIndicator(
+                                        strokeWidth: 2,
+                                        valueColor: AlwaysStoppedAnimation(
+                                          Colors.white,
+                                        ),
+                                      ),
+                                    ),
+                                    const SizedBox(width: 12),
+                                    Text(
+                                      _downloadProgress > 0
+                                          ? '$_downloadProgress%'
+                                          : 'Please wait...',
+                                      style: GoogleFonts.hankenGrotesk(
+                                        fontSize: 16,
+                                        fontWeight: FontWeight.w600,
+                                        color: Colors.white,
+                                      ),
+                                    ),
+                                  ],
+                                )
+                              : Row(
+                                  mainAxisSize: MainAxisSize.min,
+                                  children: [
+                                    Text(
+                                      _buttonLabel(),
+                                      style: GoogleFonts.hankenGrotesk(
+                                        fontSize: 16,
+                                        fontWeight: FontWeight.w600,
+                                        color: Colors.white,
+                                      ),
+                                    ),
+                                    const SizedBox(width: 8),
+                                    const Icon(Icons.arrow_forward, size: 20),
+                                  ],
+                                ),
                         ),
-                        shape: RoundedRectangleBorder(
-                          borderRadius: BorderRadius.circular(12),
-                        ),
-                        elevation: 8,
-                        shadowColor: const Color(
-                          0xFF0B5D3B,
-                        ).withValues(alpha: 0.25),
-                      ),
-                      child: Row(
-                        mainAxisSize: MainAxisSize.min,
-                        children: [
-                          Text(
-                            'Get Started',
-                            style: GoogleFonts.hankenGrotesk(
-                              fontSize: 16,
-                              fontWeight: FontWeight.w600,
-                              color: Colors.white,
+                        const SizedBox(width: 16),
+                        OutlinedButton(
+                          onPressed: () {},
+                          style: OutlinedButton.styleFrom(
+                            foregroundColor: const Color(0xFF0B5D3B),
+                            side: const BorderSide(
+                              color: Color(0xFF0B5D3B),
+                              width: 1.5,
+                            ),
+                            padding: const EdgeInsets.symmetric(
+                              horizontal: 32,
+                              vertical: 16,
+                            ),
+                            shape: RoundedRectangleBorder(
+                              borderRadius: BorderRadius.circular(12),
                             ),
                           ),
-                          const SizedBox(width: 8),
-                          const Icon(Icons.arrow_forward, size: 20),
-                        ],
-                      ),
-                    ),
-                    const SizedBox(width: 16),
-                    OutlinedButton(
-                      onPressed: () {},
-                      style: OutlinedButton.styleFrom(
-                        foregroundColor: const Color(0xFF0B5D3B),
-                        side: const BorderSide(
-                          color: Color(0xFF0B5D3B),
-                          width: 1.5,
-                        ),
-                        padding: const EdgeInsets.symmetric(
-                          horizontal: 32,
-                          vertical: 16,
-                        ),
-                        shape: RoundedRectangleBorder(
-                          borderRadius: BorderRadius.circular(12),
-                        ),
-                      ),
-                      child: Row(
-                        mainAxisSize: MainAxisSize.min,
-                        children: [
-                          Text(
-                            'View Demo',
-                            style: GoogleFonts.hankenGrotesk(
-                              fontSize: 16,
-                              fontWeight: FontWeight.w600,
-                              color: const Color(0xFF0B5D3B),
-                            ),
+                          child: Row(
+                            mainAxisSize: MainAxisSize.min,
+                            children: [
+                              Text(
+                                'View Demo',
+                                style: GoogleFonts.hankenGrotesk(
+                                  fontSize: 16,
+                                  fontWeight: FontWeight.w600,
+                                  color: const Color(0xFF0B5D3B),
+                                ),
+                              ),
+                              const SizedBox(width: 8),
+                              const Icon(Icons.play_circle_outline, size: 20),
+                            ],
                           ),
-                          const SizedBox(width: 8),
-                          const Icon(Icons.play_circle_outline, size: 20),
-                        ],
-                      ),
+                        ),
+                      ],
                     ),
+                    if (_statusMessage != null) ...[
+                      const SizedBox(height: 12),
+                      Text(
+                        _statusMessage!,
+                        style: GoogleFonts.hankenGrotesk(
+                          fontSize: 13,
+                          color: const Color(0xFF6B7280),
+                        ),
+                      ),
+                    ],
                   ],
                 ),
                 0.28,

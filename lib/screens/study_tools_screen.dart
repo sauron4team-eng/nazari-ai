@@ -149,10 +149,9 @@ class _StudyToolsScreenState extends State<StudyToolsScreen>
               const SizedBox(height: 32),
 
               // ── Recent Results ──
-              _stagger(_buildRecentResultsHeader(), 0.25),
-              const SizedBox(height: 16),
-              _stagger(_buildScoreCards(), 0.3),
-
+              // _stagger(_buildRecentResultsHeader(), 0.25),
+              // const SizedBox(height: 16),
+              // _stagger(_buildScoreCards(), 0.3),
               const SizedBox(height: 32),
 
               // ── Ready to study? ──
@@ -220,103 +219,103 @@ class _StudyToolsScreenState extends State<StudyToolsScreen>
   // ═══════════════════════════════════════════════════════════
   //  RECENT RESULTS
   // ═══════════════════════════════════════════════════════════
-  Widget _buildRecentResultsHeader() {
-    return Row(
-      mainAxisAlignment: MainAxisAlignment.spaceBetween,
-      children: [
-        Text(
-          'Recent Results',
-          style: GoogleFonts.hankenGrotesk(
-            fontSize: 24,
-            fontWeight: FontWeight.w600,
-            color: const Color(0xFF1F2937),
-            height: 1.33,
-          ),
-        ),
-        TextButton(
-          onPressed: () {},
-          style: TextButton.styleFrom(
-            padding: EdgeInsets.zero,
-            minimumSize: Size.zero,
-            tapTargetSize: MaterialTapTargetSize.shrinkWrap,
-          ),
-          child: Text(
-            'View Analytics',
-            style: GoogleFonts.hankenGrotesk(
-              fontSize: 12,
-              fontWeight: FontWeight.w600,
-              color: const Color(0xFF0B5D3B),
-              letterSpacing: 0.6,
-            ),
-          ),
-        ),
-      ],
-    );
-  }
+  // Widget _buildRecentResultsHeader() {
+  //   return Row(
+  //     mainAxisAlignment: MainAxisAlignment.spaceBetween,
+  //     children: [
+  //       Text(
+  //         'Recent Results',
+  //         style: GoogleFonts.hankenGrotesk(
+  //           fontSize: 24,
+  //           fontWeight: FontWeight.w600,
+  //           color: const Color(0xFF1F2937),
+  //           height: 1.33,
+  //         ),
+  //       ),
+  //       TextButton(
+  //         onPressed: () {},
+  //         style: TextButton.styleFrom(
+  //           padding: EdgeInsets.zero,
+  //           minimumSize: Size.zero,
+  //           tapTargetSize: MaterialTapTargetSize.shrinkWrap,
+  //         ),
+  //         child: Text(
+  //           'View Analytics',
+  //           style: GoogleFonts.hankenGrotesk(
+  //             fontSize: 12,
+  //             fontWeight: FontWeight.w600,
+  //             color: const Color(0xFF0B5D3B),
+  //             letterSpacing: 0.6,
+  //           ),
+  //         ),
+  //       ),
+  //     ],
+  //   );
+  // }
 
-  Widget _buildScoreCards() {
-    return LayoutBuilder(
-      builder: (context, constraints) {
-        final isWide = constraints.maxWidth > 768;
-        if (isWide) {
-          return Row(
-            children: const [
-              Expanded(
-                child: _ScoreCard(
-                  title: 'Advanced Macroeconomics',
-                  meta: '2 hours ago \u2022 18/20 correct',
-                  percent: 90,
-                  color: Color(0xFF0B5D3B),
-                ),
-              ),
-              SizedBox(width: 16),
-              Expanded(
-                child: _ScoreCard(
-                  title: 'Cognitive Psychology',
-                  meta: 'Yesterday \u2022 13/20 correct',
-                  percent: 65,
-                  color: Color(0xFFF59E0B),
-                ),
-              ),
-              SizedBox(width: 16),
-              Expanded(
-                child: _ScoreCard(
-                  title: 'CS 201: Algorithms',
-                  meta: 'Oct 24 \u2022 16/20 correct',
-                  percent: 80,
-                  color: Color(0xFFD4A017),
-                ),
-              ),
-            ],
-          );
-        }
-        return Column(
-          children: const [
-            _ScoreCard(
-              title: 'Advanced Macroeconomics',
-              meta: '2 hours ago \u2022 18/20 correct',
-              percent: 90,
-              color: Color(0xFF0B5D3B),
-            ),
-            SizedBox(height: 12),
-            _ScoreCard(
-              title: 'Cognitive Psychology',
-              meta: 'Yesterday \u2022 13/20 correct',
-              percent: 65,
-              color: Color(0xFFF59E0B),
-            ),
-            SizedBox(height: 12),
-            _ScoreCard(
-              title: 'CS 201: Algorithms',
-              meta: 'Oct 24 \u2022 16/20 correct',
-              percent: 80,
-              color: Color(0xFFD4A017),
-            ),
-          ],
-        );
-      },
-    );
-  }
+  // Widget _buildScoreCards() {
+  //   return LayoutBuilder(
+  //     builder: (context, constraints) {
+  //       final isWide = constraints.maxWidth > 768;
+  //       if (isWide) {
+  //         return Row(
+  //           children: const [
+  //             Expanded(
+  //               child: _ScoreCard(
+  //                 title: 'Advanced Macroeconomics',
+  //                 meta: '2 hours ago \u2022 18/20 correct',
+  //                 percent: 90,
+  //                 color: Color(0xFF0B5D3B),
+  //               ),
+  //             ),
+  //             SizedBox(width: 16),
+  //             Expanded(
+  //               child: _ScoreCard(
+  //                 title: 'Cognitive Psychology',
+  //                 meta: 'Yesterday \u2022 13/20 correct',
+  //                 percent: 65,
+  //                 color: Color(0xFFF59E0B),
+  //               ),
+  //             ),
+  //             SizedBox(width: 16),
+  //             Expanded(
+  //               child: _ScoreCard(
+  //                 title: 'CS 201: Algorithms',
+  //                 meta: 'Oct 24 \u2022 16/20 correct',
+  //                 percent: 80,
+  //                 color: Color(0xFFD4A017),
+  //               ),
+  //             ),
+  //           ],
+  //         );
+  //       }
+  //       return Column(
+  //         children: const [
+  //           _ScoreCard(
+  //             title: 'Advanced Macroeconomics',
+  //             meta: '2 hours ago \u2022 18/20 correct',
+  //             percent: 90,
+  //             color: Color(0xFF0B5D3B),
+  //           ),
+  //           SizedBox(height: 12),
+  //           _ScoreCard(
+  //             title: 'Cognitive Psychology',
+  //             meta: 'Yesterday \u2022 13/20 correct',
+  //             percent: 65,
+  //             color: Color(0xFFF59E0B),
+  //           ),
+  //           SizedBox(height: 12),
+  //           _ScoreCard(
+  //             title: 'CS 201: Algorithms',
+  //             meta: 'Oct 24 \u2022 16/20 correct',
+  //             percent: 80,
+  //             color: Color(0xFFD4A017),
+  //           ),
+  //         ],
+  //       );
+  //     },
+  //   );
+  // }
 
   // ═══════════════════════════════════════════════════════════
   //  REVIEW BANNER
@@ -478,7 +477,7 @@ class _QuizCard extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     return GestureDetector(
-      onTap: onTap,
+      onTap: () {},
       child: ClipRRect(
         borderRadius: BorderRadius.circular(16),
         child: BackdropFilter(

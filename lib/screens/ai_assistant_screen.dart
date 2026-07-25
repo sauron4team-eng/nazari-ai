@@ -1,4 +1,12 @@
+import 'dart:io';
+import 'package:flutter_gemma/core/api/flutter_gemma.dart';
+import 'package:flutter_markdown_plus/flutter_markdown_plus.dart';
+import 'package:nazariai/ai-services/gemma_service.dart' as gemma;
+import 'package:nazariai/widgets/chat_action_menu.dart';
+import 'package:nazariai/widgets/flascard_view.dart';
+import 'package:path/path.dart' as p;
 import 'package:flutter/material.dart';
+import 'package:nazariai/services/documents_service.dart';
 
 /// ---------------------------------------------------------------
 /// NazariAI — écran de chat de l'assistant d'étude
@@ -38,7 +46,9 @@ class ChatMessage {
 }
 
 class AiAssistantScreen extends StatefulWidget {
-  const AiAssistantScreen({super.key});
+  final String? initialFilePath;
+
+  const AiAssistantScreen({super.key, this.initialFilePath});
 
   @override
   State<AiAssistantScreen> createState() => _AiAssistantScreenState();
@@ -48,10 +58,230 @@ class _AiAssistantScreenState extends State<AiAssistantScreen> {
   final TextEditingController _controller = TextEditingController();
   final ScrollController _scrollController = ScrollController();
   final List<ChatMessage> _messages = [];
+  String? _attachedFilePath;
+  String? _attachedFileName;
+  int? _attachedFileSize;
+  bool _isLoadingFile = false;
+  String? _fileLoadError;
+  String? _attachedFileContent;
+  List<DocumentChunk> _documentChunks = [];
+  bool _isModelReady = false;
+  String _modelStatus = 'Initialisation du modèle IA...';
+  int _downloadProgress = 0;
+  final LayerLink _plusButtonLink = LayerLink();
+  OverlayEntry? _actionMenuOverlay;
 
-  void _handleSend() {
-    final text = _controller.text.trim();
+  @override
+  void initState() {
+    super.initState();
+    _initGemma();
+    if (widget.initialFilePath != null) {
+      _attachFile(widget.initialFilePath!);
+    }
+  }
+
+  Future<void> _initGemma() async {
+    try {
+      await gemma.setupGemmaModel(
+        onProgress: (p) {
+          if (mounted) {
+            setState(() {
+              _modelStatus = 'Downloading the template... $p%';
+              _downloadProgress = p;
+            });
+          }
+        },
+      );
+
+      if (mounted) setState(() => _modelStatus = 'Loading the model...');
+      //Check for the file's existence before starting the chat session
+      debugPrint('Modèle actif ? ${FlutterGemma.hasActiveModel()}');
+
+      await gemma.startChatSession(); // pas encore de document à ce stade
+
+      if (mounted) {
+        setState(() {
+          _isModelReady = true;
+          _modelStatus = 'Prêt';
+        });
+        debugPrint('Etat pret');
+      }
+    } catch (e, stack) {
+      debugPrint('❌ Erreur init Gemma : $e');
+      debugPrint('Stack : $stack');
+      if (mounted) {
+        setState(() {
+          _modelStatus = 'Erreur : $e';
+        });
+      }
+    }
+  }
+
+  Future<void> _attachFile(String path) async {
+    setState(() {
+      _isLoadingFile = true;
+      _fileLoadError = null;
+    });
+
+    try {
+      final file = File(path);
+      if (!await file.exists()) {
+        throw Exception('Fichier introuvable : $path');
+      }
+
+      // Un seul appel à extractChunksFromFile (l'ancien code l'appelait
+      // deux fois, dont une fois sans "await", ce qui ne compilait pas)
+      final chunks = await DocumentsService.extractChunksFromFile(path);
+      if (chunks.isEmpty) {
+        throw Exception('The document does not contain usable text.');
+      }
+
+      final bytes = await file.length();
+      // Texte complet reconstitué à partir des chunks (chunk.text au lieu
+      // de chunk directement, puisque chunk est maintenant un DocumentChunk)
+      final fullText = chunks.map((c) => c.text).join('\n\n');
+
+      setState(() {
+        _attachedFilePath = path;
+        _attachedFileName = p.basename(path);
+        _attachedFileSize = bytes;
+        _attachedFileContent = fullText;
+        _documentChunks = chunks;
+      });
+      // Attendre que le modèle soit prêt avant de démarrer une session avec contexte
+      if (!_isModelReady) {
+        await Future.doWhile(() async {
+          await Future.delayed(const Duration(milliseconds: 200));
+          return !_isModelReady;
+        });
+      }
+
+      await gemma.startChatSession(documentContext: fullText);
+      debugPrint('File attached : $_attachedFileName');
+      _addAiMessage(
+        'Document "${_attachedFileName!}" loaded locally. You can now ask questions about its content.',
+        sources: [_attachedFileName!],
+      );
+    } catch (e) {
+      setState(() {
+        _fileLoadError = e.toString();
+        _attachedFilePath = null;
+        _attachedFileName = null;
+        _attachedFileSize = null;
+        _attachedFileContent = null;
+        _documentChunks = [];
+      });
+    } finally {
+      if (mounted) {
+        setState(() {
+          _isLoadingFile = false;
+        });
+      }
+    }
+  }
+
+  void _addAiMessage(String text, {List<String>? sources}) {
+    setState(() {
+      _messages.add(
+        ChatMessage(
+          author: MessageAuthor.ai,
+          text: text,
+          sources: sources,
+          time: DateTime.now(),
+        ),
+      );
+    });
+    _scrollToBottom();
+  }
+
+  void _scrollToBottom() {
+    Future.delayed(const Duration(milliseconds: 50), () {
+      if (_scrollController.hasClients) {
+        _scrollController.animateTo(
+          _scrollController.position.maxScrollExtent,
+          duration: const Duration(milliseconds: 200),
+          curve: Curves.easeOut,
+        );
+      }
+    });
+  }
+
+  //Action on "+" AIChat icon
+  void _toggleActionMenu() {
+    try {
+      if (_actionMenuOverlay != null) {
+        _closeActionMenu();
+      } else {
+        _openActionMenu();
+      }
+    } catch (e) {
+      print("Error toggleActionMenu: $e");
+    }
+  }
+
+  void _openActionMenu() {
+    final overlay = Overlay.of(context);
+    _actionMenuOverlay = OverlayEntry(
+      builder: (context) => Stack(
+        children: [
+          // Zone invisible qui capte les taps en dehors du menu pour le fermer
+          Positioned.fill(
+            child: GestureDetector(
+              behavior: HitTestBehavior.translucent,
+              onTap: _closeActionMenu,
+              child: Container(color: Colors.transparent),
+            ),
+          ),
+          CompositedTransformFollower(
+            link: _plusButtonLink,
+            showWhenUnlinked: true,
+            targetAnchor:
+                Alignment.topLeft, // s'ancre en haut à gauche du bouton "+"
+            followerAnchor:
+                Alignment.bottomLeft, // le bas du menu colle à ce point
+            offset: const Offset(0, -12),
+            child: ChatActionMenu(
+              onSummarize: () {
+                _closeActionMenu();
+                _handleSummarize();
+              },
+              onGenerateQuiz: () {
+                _closeActionMenu();
+                _handleGenerateQuiz();
+              },
+              onGenerateFlashcards: () {
+                _closeActionMenu();
+                _handleGenerateFlashcards();
+              },
+            ),
+          ),
+        ],
+      ),
+    );
+    overlay.insert(_actionMenuOverlay!);
+  }
+
+  void _closeActionMenu() {
+    _actionMenuOverlay?.remove();
+    _actionMenuOverlay = null;
+  }
+
+  @override
+  void dispose() {
+    _closeActionMenu();
+    super.dispose();
+  }
+
+  Future<void> _handleSend([String? presetText]) async {
+    final text = (presetText ?? _controller.text).trim();
     if (text.isEmpty) return;
+
+    if (!_isModelReady) {
+      _addAiMessage(
+        'The AI model is not ready yet; please wait a few seconds.',
+      );
+      return;
+    }
 
     setState(() {
       _messages.add(
@@ -63,27 +293,109 @@ class _AiAssistantScreenState extends State<AiAssistantScreen> {
       );
     });
     _controller.clear();
+    _scrollToBottom();
 
-    // TODO: brancher ici l'appel à ton backend / modèle local.
-    // Quand la réponse arrive, ajoute-la avec :
-    // setState(() {
-    //   _messages.add(ChatMessage(
-    //     author: MessageAuthor.ai,
-    //     text: "...",
-    //     sources: ["Lecture_Notes_Week4.pdf"],
-    //     time: DateTime.now(),
-    //   ));
-    // });
-
-    Future.delayed(const Duration(milliseconds: 100), () {
-      if (_scrollController.hasClients) {
-        _scrollController.animateTo(
-          _scrollController.position.maxScrollExtent,
-          duration: const Duration(milliseconds: 250),
-          curve: Curves.easeOut,
-        );
-      }
+    // Message IA placeholder, qu'on va mettre à jour au fil du streaming
+    final aiMessageIndex = _messages.length;
+    setState(() {
+      _messages.add(
+        ChatMessage(
+          author: MessageAuthor.ai,
+          text: '',
+          sources: _attachedFileName != null ? [_attachedFileName!] : null,
+          time: DateTime.now(),
+        ),
+      );
     });
+
+    try {
+      await for (final partial in gemma.sendChatMessage(text)) {
+        setState(() {
+          _messages[aiMessageIndex] = ChatMessage(
+            author: MessageAuthor.ai,
+            text: partial,
+            sources: _messages[aiMessageIndex].sources,
+            time: _messages[aiMessageIndex].time,
+          );
+        });
+        _scrollToBottom();
+      }
+    } catch (e) {
+      setState(() {
+        _messages[aiMessageIndex] = ChatMessage(
+          author: MessageAuthor.ai,
+          text: 'Error generating the response : $e',
+          time: _messages[aiMessageIndex].time,
+        );
+      });
+    }
+  }
+
+  //Methods to manage menu under "+" on the AIChat
+  Future<void> _handleSummarize() async {
+    if (_attachedFileContent == null || _attachedFileContent!.isEmpty) {
+      _addAiMessage(
+        'No document attached to summarize. Please attach a document first.',
+      );
+      return;
+    }
+    if (!_isModelReady) {
+      _addAiMessage(
+        'The AI model isn\'t ready yet; please wait a few seconds.',
+      );
+      return;
+    }
+
+    await _handleSend('Summarize this document.');
+  }
+
+  Future<void> _handleGenerateFlashcards() async {
+    if (_attachedFileContent == null || _attachedFileContent!.isEmpty) {
+      _addAiMessage('No document attached to generate flashcards from.');
+      return;
+    }
+    if (!_isModelReady) {
+      _addAiMessage(
+        'The AI model isn\'t ready yet; please wait a few seconds.',
+      );
+      return;
+    }
+
+    _addAiMessage('Generating flashcards...');
+
+    try {
+      final cards = await gemma.generateFlashcards(
+        _attachedFileContent!,
+        count: 10,
+      );
+      if (cards.isEmpty) {
+        _addAiMessage('I couldn\'t generate flashcards, try again.');
+        return;
+      }
+      if (!mounted) return;
+      Navigator.of(
+        context,
+      ).push(MaterialPageRoute(builder: (_) => FlashcardsScreen(cards: cards)));
+    } catch (e) {
+      _addAiMessage('Error generating flashcards: $e');
+    }
+  }
+
+  Future<void> _handleGenerateQuiz() async {
+    if (_attachedFileContent == null || _attachedFileContent!.isEmpty) {
+      _addAiMessage(
+        'No document attached to summarize. Please attach a document first.',
+      );
+      return;
+    }
+    if (!_isModelReady) {
+      _addAiMessage(
+        'The AI model isn\'t ready yet; please wait a few seconds.',
+      );
+      return;
+    }
+
+    await _handleSend('Generate quiz for this document.');
   }
 
   @override
@@ -92,12 +404,15 @@ class _AiAssistantScreenState extends State<AiAssistantScreen> {
       body: SafeArea(
         child: Column(
           children: [
-            // _buildTopBar(),
+            if (_isLoadingFile ||
+                _attachedFileName != null ||
+                _fileLoadError != null)
+              _buildAttachmentBanner(),
             Expanded(
               child: _messages.isEmpty
                   ? const Center(
                       child: Text(
-                        'Ask me anything about your study!',
+                        'NazariAI your AI Study Assistant!',
                         style: TextStyle(color: NazariColors.grayLight),
                       ),
                     )
@@ -134,18 +449,23 @@ class _AiAssistantScreenState extends State<AiAssistantScreen> {
         padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 4),
         child: Row(
           children: [
-            IconButton(
-              icon: const Icon(Icons.attach_file, size: 20),
-              color: NazariColors.black,
-              onPressed: () {
-                // TODO: ouvrir le sélecteur de document
-              },
+            CompositedTransformFollower(
+              link: _plusButtonLink,
+              child: IconButton(
+                icon: const Icon(Icons.add, size: 20),
+                color: NazariColors.black,
+                onPressed: () {
+                  _toggleActionMenu();
+                  setState(() {});
+                },
+              ),
             ),
+
             Expanded(
               child: TextField(
                 controller: _controller,
                 decoration: const InputDecoration(
-                  hintText: 'Ask about your study',
+                  hintText: 'Ask anything about your study',
                   hintStyle: TextStyle(color: NazariColors.grayLight),
                   border: InputBorder.none,
                 ),
@@ -165,6 +485,83 @@ class _AiAssistantScreenState extends State<AiAssistantScreen> {
             ),
           ],
         ),
+      ),
+    );
+  }
+
+  Widget _buildAttachmentBanner() {
+    return Container(
+      width: double.infinity,
+      color: const Color(0xFFF5F5F5),
+      padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Row(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Expanded(
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    if (_isLoadingFile)
+                      const Text(
+                        'Loading document...',
+                        style: TextStyle(
+                          fontSize: 14,
+                          fontWeight: FontWeight.w600,
+                        ),
+                      )
+                    else if (_fileLoadError != null)
+                      const Text(
+                        'Error loading document',
+                        style: TextStyle(
+                          fontSize: 14,
+                          fontWeight: FontWeight.w600,
+                          color: Colors.red,
+                        ),
+                      )
+                    else
+                      Text(
+                        'Document loaded : ${_attachedFileName ?? 'No document'}',
+                        style: const TextStyle(
+                          fontSize: 14,
+                          fontWeight: FontWeight.w600,
+                        ),
+                      ),
+                    const SizedBox(height: 4),
+                    Text(
+                      _isLoadingFile
+                          ? 'Please wait...'
+                          : _fileLoadError ??
+                                _attachedFilePath ??
+                                'No document attached',
+                      maxLines: 2,
+                      overflow: TextOverflow.ellipsis,
+                      style: TextStyle(
+                        fontSize: 12,
+                        color: _fileLoadError != null
+                            ? Colors.red
+                            : NazariColors.grayMid,
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+              if (!_isLoadingFile && _attachedFileSize != null)
+                Padding(
+                  padding: const EdgeInsets.only(left: 12),
+                  child: Text(
+                    '${(_attachedFileSize! / 1024).toStringAsFixed(1)} KB',
+                    style: const TextStyle(
+                      fontSize: 12,
+                      color: NazariColors.grayMid,
+                    ),
+                  ),
+                ),
+            ],
+          ),
+        ],
       ),
     );
   }
@@ -264,12 +661,18 @@ class _AiCard extends StatelessWidget {
                   ],
                 ),
                 const SizedBox(height: 12),
-                Text(
-                  message.text,
-                  style: const TextStyle(
-                    fontSize: 15,
-                    height: 1.55,
-                    color: NazariColors.black,
+                MarkdownBody(
+                  data: message.text,
+                  styleSheet: MarkdownStyleSheet(
+                    p: const TextStyle(
+                      fontSize: 15,
+                      height: 1.55,
+                      color: NazariColors.black,
+                    ),
+                    strong: const TextStyle(
+                      fontWeight: FontWeight.bold,
+                      color: NazariColors.black,
+                    ),
                   ),
                 ),
                 if (message.sources != null && message.sources!.isNotEmpty) ...[

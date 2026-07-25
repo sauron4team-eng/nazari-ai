@@ -2,15 +2,23 @@ import 'package:flutter/material.dart';
 import 'package:hive_flutter/hive_flutter.dart';
 import 'package:intl/intl.dart';
 import 'package:flutter/services.dart';
+import 'package:flutter_gemma/core/api/flutter_gemma.dart';
+import 'package:flutter_gemma_litertlm/flutter_gemma_litertlm.dart';
 import 'package:google_fonts/google_fonts.dart';
+import 'package:hive_flutter/hive_flutter.dart';
+import 'package:nazariai/screens/ai_assistant_screen.dart';
 import 'screens/splash_screen.dart';
 import 'screens/home_screen.dart';
 import 'screens/documents_screen.dart';
-import 'Recover/ai_assistant_screen.dart' hide ChatMessage;
 import 'screens/study_tools_screen.dart';
 
-void main() {
+void main() async {
   WidgetsFlutterBinding.ensureInitialized();
+  await Hive.initFlutter();
+  await FlutterGemma.initialize(
+    maxDownloadRetries: 10,
+    inferenceEngines: [LiteRtLmEngine()],
+  );
   SystemChrome.setPreferredOrientations([
     DeviceOrientation.portraitUp,
     DeviceOrientation.portraitDown,
@@ -55,6 +63,12 @@ class NazariAIApp extends StatelessWidget {
         ),
       ),
       home: const SplashScreen(),
+      // routes: {
+      //   AppRoutes.home: (context) => const HomeScreen(),
+      //   AppRoutes.documents: (context) => const DocumentsScreen(),
+      //   AppRoutes.aiAssistant: (context) => const AiAssistantScreen(),
+      //   AppRoutes.studyTools: (context) => const StudyToolsScreen(),
+      // },
     );
   }
 }
@@ -79,7 +93,6 @@ class _MainScreenState extends State<MainScreen> {
     const HomeScreen(),
     const DocumentsScreen(),
     const AiAssistantScreen(),
-    StudyToolsScreen(onNavigateToTab: _onItemTapped),
   ];
 
   @override
@@ -104,11 +117,6 @@ class _MainScreenState extends State<MainScreen> {
             icon: Icon(Icons.psychology_outlined),
             activeIcon: Icon(Icons.psychology),
             label: 'AI Assistant',
-          ),
-          BottomNavigationBarItem(
-            icon: Icon(Icons.analytics_outlined),
-            activeIcon: Icon(Icons.analytics),
-            label: 'Study Tools',
           ),
         ],
       ),

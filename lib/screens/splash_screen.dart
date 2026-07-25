@@ -67,11 +67,11 @@ class _SplashScreenState extends State<SplashScreen>
                   mainAxisAlignment: MainAxisAlignment.center,
                   mainAxisSize: MainAxisSize.min,
                   children: [
-                    Image.asset(
-                      'assets/images/logo.jpeg',
-                      width: 120,
-                      height: 120,
-                    ),
+                    // Image.asset(
+                    //   'aassets/images/logo.png',
+                    //   width: 120,
+                    //   height: 120,
+                    // ),
                     const SizedBox(height: 16),
                     Text(
                       'NazariAI',

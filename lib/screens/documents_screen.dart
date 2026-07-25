@@ -1,4 +1,18 @@
+import 'dart:io';
+import 'package:nazariai/utils/debug_print_data.dart';
+import 'package:nazariai/utils/debug_print_data.dart' as DatabaseService;
+import 'package:path/path.dart' as p;
+
+import 'package:file_picker/file_picker.dart';
 import 'package:flutter/material.dart';
+import 'package:hive_flutter/hive_flutter.dart';
+import 'package:nazariai/screens/ai_assistant_screen.dart';
+import 'package:nazariai/services/documents_service.dart';
+
+// Nom de la Hive box utilisée pour persister les documents uploadés,
+// afin qu'ils restent disponibles après fermeture/réouverture de l'app.
+const String _documentsBoxName = 'documents_box';
+const String _documentsKey = 'items';
 
 // ---------------------------------------------------------------------------
 // NazariAI - Documents Screen
@@ -35,33 +49,12 @@ const Color colorSuccess = Color(0xFF22C55E);
 const double _breakpointSmallPhone = 360; // très petits écrans
 const double _breakpointWide = 700; // bascule bento grid en 2 colonnes
 
+//-----FUNCTIONS---------------------------------------------
+
+//---------------navigate to page-----------------------
+
 // -------------------- Modèle de données simple (Map, pas de classe métier) -
-final List<Map<String, String>> _allDocuments = [
-  {
-    'title': 'Macroeconomics_Ch4.pdf',
-    'meta': 'Added 2h ago • 4.2 MB',
-    'icon': 'picture_as_pdf',
-    'type': 'pdf',
-  },
-  {
-    'title': 'History_Thesis_Draft.docx',
-    'meta': 'Added Yesterday • 1.1 MB',
-    'icon': 'description',
-    'type': 'doc',
-  },
-  {
-    'title': 'Lab_Results_Bio.xlsx',
-    'meta': 'Added 3 days ago • 850 KB',
-    'icon': 'lab_profile',
-    'type': 'doc',
-  },
-  {
-    'title': 'Neural_Networks_Intro.pdf',
-    'meta': 'Added 5 days ago • 12.4 MB',
-    'icon': 'picture_as_pdf',
-    'type': 'pdf',
-  },
-];
+final List<Map<String, String>> _allDocuments = [];
 
 // -------------------- Widget public à appeler depuis main.dart -------------
 class DocumentsScreen extends StatefulWidget {
@@ -75,6 +68,70 @@ class _DocumentsScreenState extends State<DocumentsScreen> {
   final TextEditingController _searchController = TextEditingController();
   String _query = '';
   String _selectedFilter = 'All'; // 'All' | 'PDFs' | 'Documents'
+  final List<Map<String, dynamic>> _selectedDocuments = [];
+
+  // Box Hive contenant les documents uploadés (persistée sur disque).
+  Box? _documentsBox;
+  bool _isLoadingDocuments = true;
+
+  Future<void> _addDocument() async {
+    final document = await DocumentsService.addDocument();
+
+    if (document == null) return;
+
+    final path = document['path'] as String?;
+    if (path == null) return;
+
+    // Vérifier si le document existe déjà
+    if (_selectedDocuments.any((doc) => doc['path'] == path)) {
+      return;
+    }
+
+    setState(() {
+      _selectedDocuments.add(document);
+    });
+    await _persistDocuments();
+    print('Document ajouté : ${document['title']}');
+  }
+
+  Future<void> _removeDocument(String path) async {
+    setState(() {
+      _selectedDocuments.removeWhere((doc) => doc['path'] == path);
+    });
+    await _persistDocuments();
+  }
+
+  // Ouvre (ou récupère) la Hive box et recharge les documents précédemment
+  // sauvegardés, s'il y en a.
+  Future<void> _initDocumentsBox() async {
+    final box = await Hive.openBox(_documentsBoxName);
+    final stored = box.get(_documentsKey) as List?;
+
+    final restored = <Map<String, dynamic>>[];
+    if (stored != null) {
+      for (final item in stored) {
+        if (item is Map) {
+          restored.add(Map<String, dynamic>.from(item));
+        }
+      }
+    }
+
+    if (!mounted) return;
+    setState(() {
+      _documentsBox = box;
+      _selectedDocuments
+        ..clear()
+        ..addAll(restored);
+      _isLoadingDocuments = false;
+    });
+  }
+
+  // Sauvegarde la liste courante des documents dans Hive.
+  Future<void> _persistDocuments() async {
+    final box = _documentsBox;
+    if (box == null) return;
+    await box.put(_documentsKey, _selectedDocuments);
+  }
 
   @override
   void initState() {
@@ -84,6 +141,7 @@ class _DocumentsScreenState extends State<DocumentsScreen> {
         _query = _searchController.text.toLowerCase();
       });
     });
+    _initDocumentsBox();
   }
 
   @override
@@ -92,13 +150,19 @@ class _DocumentsScreenState extends State<DocumentsScreen> {
     super.dispose();
   }
 
-  List<Map<String, String>> get _filteredDocuments {
-    return _allDocuments.where((doc) {
+  List<Map<String, dynamic>> get _filteredDocuments {
+    final docs = <Map<String, dynamic>>[];
+    docs.addAll(_selectedDocuments);
+
+    return docs.where((doc) {
       final matchesQuery = doc['title']!.toLowerCase().contains(_query);
       final matchesFilter =
           _selectedFilter == 'All' ||
           (_selectedFilter == 'PDFs' && doc['type'] == 'pdf') ||
-          (_selectedFilter == 'Documents' && doc['type'] == 'doc');
+          (_selectedFilter == 'Documents' &&
+              (doc['type'] == 'doc' ||
+                  doc['type'] == 'docx' ||
+                  doc['type'] == 'txt'));
       return matchesQuery && matchesFilter;
     }).toList();
   }
@@ -507,11 +571,39 @@ class _DocumentsScreenState extends State<DocumentsScreen> {
             separatorBuilder: (context, index) => const SizedBox(height: 12),
             itemBuilder: (context, index) {
               final doc = docs[index];
-              return _buildDocumentCard(
-                title: doc['title']!,
-                meta: doc['meta']!,
-                iconName: doc['icon']!,
-                type: doc['type']!,
+              final path = doc['path'] as String?;
+              return GestureDetector(
+                onTap: () {
+                  if (path != null && path.isNotEmpty) {
+                    Navigator.push(
+                      context,
+                      MaterialPageRoute(
+                        builder: (context) =>
+                            AiAssistantScreen(initialFilePath: path),
+                      ),
+                    );
+                  }
+                },
+                child: _buildDocumentCard(
+                  title: doc['title']!,
+                  meta: doc['meta']!,
+                  iconName: doc['icon']!,
+                  type: doc['type']!,
+                  onSummarize: path != null && path.isNotEmpty
+                      ? () {
+                          Navigator.push(
+                            context,
+                            MaterialPageRoute(
+                              builder: (context) =>
+                                  AiAssistantScreen(initialFilePath: path),
+                            ),
+                          );
+                        }
+                      : null,
+                  onDelete: path != null && path.isNotEmpty
+                      ? () => _removeDocument(path)
+                      : null,
+                ),
               );
             },
           ),
@@ -525,6 +617,8 @@ class _DocumentsScreenState extends State<DocumentsScreen> {
         return Icons.picture_as_pdf;
       case 'description':
         return Icons.description;
+      case 'article':
+        return Icons.article;
       case 'lab_profile':
         return Icons.biotech;
       default:
@@ -557,6 +651,8 @@ class _DocumentsScreenState extends State<DocumentsScreen> {
     required String meta,
     required String iconName,
     required String type,
+    VoidCallback? onSummarize,
+    VoidCallback? onDelete,
   }) {
     return Container(
       width: double.infinity,
@@ -616,10 +712,18 @@ class _DocumentsScreenState extends State<DocumentsScreen> {
                 ),
               ),
               const SizedBox(width: 8),
-              const Icon(
-                Icons.more_vert,
-                color: colorOnSurfaceVariant,
-                size: 20,
+              PopupMenuButton<String>(
+                icon: const Icon(
+                  Icons.delete_outline,
+                  color: colorOnSurfaceVariant,
+                  size: 20,
+                ),
+                onSelected: (value) {
+                  if (value == 'delete') onDelete?.call();
+                },
+                itemBuilder: (context) => [
+                  const PopupMenuItem(value: 'delete', child: Text('Remove')),
+                ],
               ),
             ],
           ),
@@ -643,7 +747,7 @@ class _DocumentsScreenState extends State<DocumentsScreen> {
             children: [
               Expanded(
                 child: ElevatedButton(
-                  onPressed: () {},
+                  onPressed: onSummarize,
                   style: ElevatedButton.styleFrom(
                     backgroundColor: colorPrimary,
                     foregroundColor: colorOnPrimary,
@@ -654,7 +758,7 @@ class _DocumentsScreenState extends State<DocumentsScreen> {
                     ),
                   ),
                   child: const Text(
-                    'Summarize',
+                    'Move to chat',
                     style: TextStyle(fontSize: 12, fontWeight: FontWeight.w600),
                   ),
                 ),
@@ -743,7 +847,9 @@ class _DocumentsScreenState extends State<DocumentsScreen> {
         final double screenWidth = MediaQuery.of(context).size.width;
         if (screenWidth < _breakpointSmallPhone) {
           return FloatingActionButton(
-            onPressed: () {},
+            onPressed: () async {
+              await _addDocument();
+            },
             backgroundColor: colorPrimary,
             foregroundColor: colorOnPrimary,
             shape: RoundedRectangleBorder(
@@ -753,12 +859,14 @@ class _DocumentsScreenState extends State<DocumentsScreen> {
           );
         }
         return FloatingActionButton.extended(
-          onPressed: () {},
+          onPressed: () async {
+            await _addDocument(); // Affiche le contenu de la base dans la console pour debug
+          },
           backgroundColor: colorPrimary,
           foregroundColor: colorOnPrimary,
           icon: const Icon(Icons.add),
           label: const Text(
-            'Upload New Document',
+            'Upload New File',
             style: TextStyle(fontWeight: FontWeight.w600),
           ),
           shape: RoundedRectangleBorder(
